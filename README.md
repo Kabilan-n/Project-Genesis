@@ -63,31 +63,44 @@ You observe through a real-time web UI. You cannot interfere.
 
 ### One-command startup (Recommended)
 
+**Linux / macOS:**
 ```bash
-# Linux / macOS
 ./start.sh
+```
 
-# Windows (PowerShell or Command Prompt)
+**Windows — PowerShell (most reliable):**
+```powershell
+# Allow scripts (first time only):
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Then run:
+.\start.ps1
+```
+
+**Windows — Command Prompt:**
+```cmd
 start.bat
 ```
 
 This script does everything:
-1. Cleans up old processes
-2. Starts Docker (PostgreSQL + Redis)
-3. Installs dependencies
-4. Runs migrations
-5. Seeds a new world (if needed) and updates `.env`
-6. Starts all services in dev mode
+1. 🧹 Cleans up old Node processes
+2. 🐳 Starts Docker (PostgreSQL + Redis)
+3. 📦 Installs dependencies
+4. 📊 Runs database migrations
+5. 🌍 Seeds a new world (if needed) and auto-updates `.env`
+6. 🚀 Starts all services (API + Web + Simulation)
 
-Then open [http://localhost:3000](http://localhost:3000).
+Then open **[http://localhost:3000](http://localhost:3000)** → Log in → Enter World.
 
 ### Stop everything
 
+**Linux / macOS:**
 ```bash
-# Linux / macOS
 ./kill.sh
+```
 
-# Windows
+**Windows:**
+```cmd
 kill.bat
 ```
 
