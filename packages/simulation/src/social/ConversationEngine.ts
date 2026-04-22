@@ -1,0 +1,219 @@
+import { query, queryOne, execute } from '../db.js';
+import { LLMFactory } from '../llm/LLMFactory.js';
+import type { LLMClient } from '../llm/types.js';
+import { PromptBuilder } from '../llm/PromptBuilder.js';
+import { PromptBuilderOptimised } from '../llm/PromptBuilderOptimised.js';
+import { KnowledgeEngine } from '../cultural/KnowledgeEngine.js';
+import type {
+  Agent, Conversation, ConversationTurn, Relationship, RelationshipDelta
+} from '../types.js';
+
+const MAX_TURNS = 4; // 2 exchanges (A→B→A→B)
+
+export class ConversationEngine {
+  private llm: LLMClient;
+  private promptBuilder: PromptBuilder | PromptBuilderOptimised;
+  private knowledgeEngine: KnowledgeEngine;
+
+  constructor() {
+    this.llm = LLMFactory.fromEnv();
+    this.promptBuilder = process.env.OPTIMIZE_PROMPTS === 'true'
+      ? new PromptBuilderOptimised()
+      : new PromptBuilder();
+    this.knowledgeEngine = new KnowledgeEngine();
+  }
+
+  /**
+   * Run a full multi-turn conversation between two agents.
+   * Returns the completed Conversation record.
+   */
+  async runConversation(
+    initiator: Agent,
+    target: Agent,
+    openingMessage: string,
+    tick: number,
+    day: number
+  ): Promise<Conversation> {
+    const turns: ConversationTurn[] = [];
+
+    // Turn 1: initiator's opening (already decided by AgentEngine)
+    turns.push({
+      turn_number: 1,
+      speaker_id: initiator.agent_id,
+      speaker_name: initiator.name,
+      message: openingMessage,
+      thought: 'Starting the conversation',
+      is_ending: false,
+    });
+
+    let lastSpeaker = initiator;
+    let lastListener = target;
+    let lastMessage = openingMessage;
+    let conversationEnded = false;
+
+    // Run up to MAX_TURNS total (turn 1 is already done)
+    for (let t = 2; t <= MAX_TURNS && !conversationEnded; t++) {
+      // Swap speakers
+      [lastSpeaker, lastListener] = [lastListener, lastSpeaker];
+
+      const listenerRel = await this.getRelationshipBetween(lastSpeaker.agent_id, lastListener.agent_id);
+      const recentMemories = await this.getRecentMemories(lastSpeaker.agent_id);
+
+      const prompt = this.promptBuilder.buildConversationTurnPrompt(
+        lastSpeaker,
+        lastListener,
+        turns,
+        lastMessage,
+        listenerRel,
+        recentMemories,
+        tick,
+        day,
+        t === MAX_TURNS // force_end on last turn
+      );
+
+      const response = await this.llm.getConversationResponse(prompt);
+
+      turns.push({
+        turn_number: t,
+        speaker_id: lastSpeaker.agent_id,
+        speaker_name: lastSpeaker.name,
+        message: response.speech ?? '...',
+        thought: response.thought,
+        is_ending: response.is_ending ?? (t === MAX_TURNS),
+      });
+
+      lastMessage = response.speech ?? '';
+      conversationEnded = response.is_ending ?? false;
+    }
+
+    // Compute outcome and relationship deltas
+    const outcome = this.computeOutcome(turns);
+    const relationshipChanges = this.computeRelationshipChanges(
+      initiator,
+      target,
+      turns,
+      outcome
+    );
+
+    const conversation: Conversation = {
+      world_id: initiator.world_id,
+      tick,
+      day,
+      initiator_agent_id: initiator.agent_id,
+      target_agent_id: target.agent_id,
+      location_x: initiator.state.position_x,
+      location_y: initiator.state.position_y,
+      topic: this.extractTopic(turns),
+      turns,
+      outcome,
+      relationship_changes: relationshipChanges,
+    };
+
+    const persisted = await this.persist(conversation);
+
+    // Phase 3: propagate knowledge and attempt skill teaching on positive outcomes
+    if (persisted.outcome === 'bonding' || persisted.outcome === 'friendly') {
+      await Promise.all([
+        this.knowledgeEngine.propagateKnowledge(initiator, target, persisted),
+        this.knowledgeEngine.attemptSkillTeaching(initiator, target, persisted),
+      ]);
+    }
+
+    return persisted;
+  }
+
+  private computeOutcome(turns: ConversationTurn[]): Conversation['outcome'] {
+    const transcript = turns.map(t => t.message + ' ' + t.thought).join(' ').toLowerCase();
+
+    const positiveScore = (
+      (transcript.match(/\b(friend|trust|help|thank|care|love|together|glad|happy|share|gift)\b/g) ?? []).length
+    );
+    const negativeScore = (
+      (transcript.match(/\b(enemy|hate|fear|angry|attack|leave|alone|danger|threat|warn)\b/g) ?? []).length
+    );
+
+    if (positiveScore >= 3 && negativeScore === 0) return 'bonding';
+    if (positiveScore >= 2) return 'friendly';
+    if (negativeScore >= 3) return 'hostile';
+    if (negativeScore >= 2) return 'conflict';
+    return 'neutral';
+  }
+
+  private computeRelationshipChanges(
+    initiator: Agent,
+    target: Agent,
+    turns: ConversationTurn[],
+    outcome: Conversation['outcome']
+  ): Record<string, RelationshipDelta> {
+    // Trust is earned slowly and lost quickly — asymmetric by design
+    const baseDeltas: Record<Conversation['outcome'], RelationshipDelta> = {
+      bonding:        { trust: 4,  affection: 5,  respect: 3,  fear: -2 },
+      friendly:       { trust: 2,  affection: 3,  respect: 1,  fear: -1 },
+      neutral:        { trust: 0,  affection: 0,  respect: 0,  fear: 0  },
+      reconciliation: { trust: 3,  affection: 2,  respect: 2,  fear: -3 },
+      conflict:       { trust: -8, affection: -6, respect: -3, fear: 5  },
+      hostile:        { trust: -12, affection: -10, respect: -5, fear: 8 },
+    };
+
+    const delta = baseDeltas[outcome];
+
+    // Personality modifiers: empathetic initiators give/receive more affection
+    const empathyMod = (initiator.traits.empathy - 50) / 50; // -1 to +1
+    const adjustedAffection = Math.round((delta.affection ?? 0) * (1 + empathyMod * 0.3));
+
+    const initiatorDelta: RelationshipDelta = { ...delta, affection: adjustedAffection };
+    const targetDelta: RelationshipDelta = { ...delta, affection: adjustedAffection };
+
+    return {
+      [initiator.agent_id]: initiatorDelta,
+      [target.agent_id]: targetDelta,
+    };
+  }
+
+  private extractTopic(turns: ConversationTurn[]): string {
+    if (turns.length === 0) return 'general';
+    const firstMessage = turns[0].message.slice(0, 50);
+    return firstMessage;
+  }
+
+  private async getRelationshipBetween(agentId: string, otherId: string): Promise<Relationship | null> {
+    return queryOne<Relationship>(
+      `SELECT r.*, a.name as other_agent_name
+       FROM social.relationships r
+       JOIN agents.agents a ON a.agent_id = r.other_agent_id
+       WHERE r.agent_id = $1 AND r.other_agent_id = $2`,
+      [agentId, otherId]
+    );
+  }
+
+  private async getRecentMemories(agentId: string): Promise<string[]> {
+    const rows = await query<{ summary: string }>(
+      `SELECT summary FROM memory.episodic_memories
+       WHERE agent_id = $1
+       ORDER BY importance DESC, tick DESC
+       LIMIT 3`,
+      [agentId]
+    );
+    return rows.map(r => r.summary);
+  }
+
+  private async persist(conv: Conversation): Promise<Conversation> {
+    const row = await queryOne<{ conversation_id: string }>(
+      `INSERT INTO social.conversations
+         (world_id, tick, day, initiator_agent_id, target_agent_id,
+          location_x, location_y, topic, turns, outcome, relationship_changes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb)
+       RETURNING conversation_id`,
+      [
+        conv.world_id, conv.tick, conv.day,
+        conv.initiator_agent_id, conv.target_agent_id,
+        conv.location_x, conv.location_y,
+        conv.topic,
+        JSON.stringify(conv.turns),
+        conv.outcome,
+        JSON.stringify(conv.relationship_changes),
+      ]
+    );
+    return { ...conv, conversation_id: row!.conversation_id };
+  }
+}

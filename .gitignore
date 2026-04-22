@@ -1,0 +1,8 @@
+# Ignore environment variable files
+.env
+
+# Ignore node_modules
+node_modules/
+
+# Claude Code local settings (may contain API keys)
+.claude/settings.local.json

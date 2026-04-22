@@ -1,0 +1,17 @@
+
+> @genesis/api@1.0.0 build
+> tsc
+
+src/routes/auth.ts(56,42): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+src/routes/onboarding.ts(165,54): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+src/routes/onboarding.ts(180,70): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+src/routes/onboarding.ts(195,66): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+src/routes/onboarding.ts(239,67): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+src/routes/onboarding.ts(256,67): error TS2339: Property 'authenticate' does not exist on type 'FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse<IncomingMessage>, FastifyBaseLogger, FastifyTypeProviderDefault>'.
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path D:\Agent-world\packages\api
+npm error workspace @genesis/api@1.0.0
+npm error location D:\Agent-world\packages\api
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsc
