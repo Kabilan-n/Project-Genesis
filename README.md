@@ -61,15 +61,49 @@ You observe through a real-time web UI. You cannot interfere.
 
 ## Quick Start
 
-### 1. Clone and install
+### One-command startup (Recommended)
+
+```bash
+# Linux / macOS
+./start.sh
+
+# Windows (PowerShell or Command Prompt)
+start.bat
+```
+
+This script does everything:
+1. Cleans up old processes
+2. Starts Docker (PostgreSQL + Redis)
+3. Installs dependencies
+4. Runs migrations
+5. Seeds a new world (if needed) and updates `.env`
+6. Starts all services in dev mode
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+### Stop everything
+
+```bash
+# Linux / macOS
+./kill.sh
+
+# Windows
+kill.bat
+```
+
+---
+
+### Manual setup (if you prefer)
+
+**1. Clone and install**
 
 ```bash
 git clone <repo-url>
-cd Agent-world
+cd Project-Genesis
 npm install
 ```
 
-### 2. Configure environment
+**2. Configure environment**
 
 ```bash
 cp .env.example .env
@@ -79,44 +113,43 @@ Edit `.env` and fill in:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...    # Required
-
-# Everything else has sensible defaults
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-haiku-4-5-20251001
+OPTIMIZE_PROMPTS=true           # Token optimization (default: on)
 ```
 
-### 3. Start infrastructure
+**3. Start infrastructure**
 
 ```bash
 docker compose up -d
 ```
 
-### 4. Run database migrations
+**4. Run migrations**
 
 ```bash
 npm run db:migrate
 ```
 
-### 5. Seed the world
+**5. Seed the world**
 
 ```bash
 npm run db:seed
 ```
 
-Copy the `WORLD_ID` printed to the terminal and add it to `.env`:
+Copy the printed `WORLD_ID` into `.env`:
 
 ```env
 WORLD_ID=<paste-here>
 NEXT_PUBLIC_WORLD_ID=<paste-here>
 ```
 
-### 6. Start everything
+**6. Start dev servers**
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). You'll land on the marketing page — click **Create account**, then **Enter World** to reach the observer at `/viewer`. The viewer route is auth-gated; unauthenticated users are redirected to `/login`.
+Open [http://localhost:3000](http://localhost:3000) → **Create account** → **Enter World** to reach the observer at `/viewer`.
 
 ---
 
