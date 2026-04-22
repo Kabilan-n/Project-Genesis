@@ -61,6 +61,7 @@
     - 14.7 [Updated mental-state matrix](#147-updated-mental-state-matrix)
     - 14.8 [LLM abstraction layer](#148-llm-abstraction-layer)
     - 14.9 [Full simulation tick order (current)](#149-full-simulation-tick-order-current)
+    - 14.10 [UI: Conversation history & relationship tracking](#1410-ui-conversation-history--relationship-tracking)
 
 ---
 
@@ -1368,6 +1369,9 @@ Result examples: *"The Hopeful Caregiver"*, *"The Cautious Observer"*, *"The Spo
 - **`/login`**, **`/register`** — auth forms that persist JWT via Zustand's `persist` middleware in [lib/auth.ts](../packages/web/src/lib/auth.ts)
 - **`/viewer`** — the full simulation UI (was the root page prior to the auth layer). Redirects unauthenticated users to `/login`.
 
+**New components:**
+- [ConversationHistory.tsx](../packages/web/src/components/ConversationHistory.tsx) — scrollable view of all past conversations between two agents, with outcome badges and optional thought display. Accessed from the **Relations** tab in the Agent Profile by clicking any relationship.
+
 All authenticated fetches go through `apiFetch(path, init)` which attaches `Authorization: Bearer <token>`.
 
 ### 14.7 Updated mental-state matrix
@@ -1396,7 +1400,9 @@ Claude is no longer the only option. `LLMFactory.fromEnv()` in [packages/simulat
 - `OllamaClient` (local models)
 - `HuggingFaceClient` (inference endpoints)
 
-There are also two `PromptBuilder` variants — the verbose `PromptBuilder` (~600–800 tokens / decision) and `PromptBuilderOptimised` (~150–250 tokens). Picked by `OPTIMIZE_PROMPTS=true` env flag.
+**Token Optimization:** Two `PromptBuilder` variants are available:
+- **Optimised** (default, `OPTIMIZE_PROMPTS=true`) — ~150–250 tokens per decision. Uses terse `key:value` format, omits empty sections, caps memories/nearby agents/knowledge at 3 each. Great for cost reduction.
+- **Verbose** (`OPTIMIZE_PROMPTS=false`) — ~600–800 tokens per decision. Full prose headers and all context. Better for debugging or lower token sensitivity.
 
 ### 14.9 Full simulation tick order (current)
 
@@ -1416,4 +1422,27 @@ From [packages/simulation/src/index.ts](../packages/simulation/src/index.ts), in
 12. **Once per in-game day**: `economyEngine.runMarketTick`, `beliefEngine.checkBeliefExtinction`, `chronicleEngine.generateChronicle` (if a new era has completed)
 
 The loop sleeps so the overall cadence is `SIMULATION_TICK_INTERVAL_MS` (default 5000 ms).
+
+### 14.10 UI: Conversation history & relationship tracking
+
+A new component `ConversationHistory.tsx` ([packages/web/src/components/ConversationHistory.tsx](../packages/web/src/components/ConversationHistory.tsx)) displays all past conversations between two agents in a scrollable, organized view:
+
+**Layout:**
+- **Left sidebar** — List of all conversations with the selected relationship partner, sorted newest first. Each entry shows:
+  - Day and outcome badge (bonding, friendly, neutral, reconciliation, conflict, hostile)
+  - Number of turns in the conversation
+  - Highlight the currently selected conversation
+- **Right panel** — Full transcript of the selected conversation with:
+  - Speaker names, turn numbers, messages
+  - Optional thought display (toggle "show thoughts" button) — reveals each speaker's internal reasoning during the conversation
+  - Day/tick timestamps
+
+**Usage:**
+Open an agent profile → **Relations** tab → click any relationship → ConversationHistory opens. Provides full context of how the relationship has evolved: is it bonding, becoming hostile, reconciling after conflict, etc.
+
+**Benefits:**
+- Observers can understand relationship dynamics at a glance
+- Track patterns in how agents interact (e.g., "Always conflict with X")
+- See thought processes alongside dialogue for deeper insight into agent reasoning
+- Timestamped history prevents missing relationship milestones
 

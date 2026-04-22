@@ -209,7 +209,7 @@ HUGGINGFACE_API_KEY=hf_...
 
 ## Token Optimisation
 
-Set `OPTIMIZE_PROMPTS=true` to use compact prompts (~150–250 tokens per decision instead of ~600–800). Useful for reducing API costs at scale with minimal quality loss.
+Token optimisation is **enabled by default** (`OPTIMIZE_PROMPTS=true`). This uses compact prompts (~150–250 tokens per decision instead of ~600–800), reducing API costs at scale with minimal quality loss.
 
 The optimised builder uses:
 - Terse `key:value` syntax instead of prose headers
@@ -217,7 +217,9 @@ The optimised builder uses:
 - Caps memories at 3, nearby agents at 3, knowledge facts at 3
 - Abbreviated JSON schema
 
-You can see the current setting in the observer UI under the **Settings** (gear icon) in the top bar.
+To disable: set `OPTIMIZE_PROMPTS=false` in your `.env`.
+
+You can verify the current setting in the observer UI under **Settings** (gear icon) in the top bar.
 
 ---
 
@@ -400,10 +402,11 @@ npm run test         # Run simulation tests
 | **World Map** (center) | Canvas rendering of the 50×50 world. Scroll to zoom, drag to pan. Agents shown as colored dots (color = mental state). Unexplored tiles are rendered dark — the fog lifts incrementally as agents walk (polled every 5s). |
 | **Stats Bar** (top) | Day, tick, time-of-day, population count, current username with logout. Gear icon → Settings. ✨ icon → Create-agent wizard. |
 | **Civilisation Panel** (left, collapsible) | Wars, active beliefs, laws, chronicles. Click ▶ to expand. |
-| **Agent Profile** (right top) | Click any agent dot to open. 5 tabs: Status, Relations, Group, History, Family Tree. |
+| **Agent Profile** (right top) | Click any agent dot to open. 5 tabs: Status, Relations, Group, History, Family Tree. On **Relations** tab, click any relationship to open **Conversation History**. |
+| **Conversation History** | Scrollable view of all past conversations between two agents. Left sidebar lists all conversations (sorted newest first) with outcome badges. Right panel shows full transcript with optional thoughts. Helps track relationship evolution. |
 | **Event Feed** (right bottom) | Real-time stream of agent actions, conversations, trades, conflicts. |
 | **Create-Agent Modal** | 12 soul questions → name/appearance → your agent is spawned into the world with traits derived from your answers. |
-| **Settings Modal** | Shows active LLM provider, model, prompt optimisation status, and tick interval. |
+| **Settings Modal** | Shows active LLM provider, model, prompt optimisation status (enabled by default), and tick interval. |
 
 ---
 
