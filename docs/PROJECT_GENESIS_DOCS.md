@@ -1,7 +1,7 @@
 # Project Genesis — Complete Technical Documentation
 
-**Version:** Phases 1 – 6 + Generations + Fog of War + Accounts & Onboarding  
-**Last updated:** 2026-04-21  
+**Version:** Phases 1 – 6 + Generations + Fog of War + Accounts & Onboarding + Chat Thread UI  
+**Last updated:** 2026-04-25  
 **Stack:** TypeScript · Node.js · PostgreSQL 16 · Redis · Claude Haiku (Anthropic / OpenAI / Ollama / HuggingFace) · Next.js 14
 
 > The sections below (1–13) document Phases 1–3 in detail. For a summary of the layers added after Phase 3 — the full civilisation stack, the observer + generations layers, fog of war, and the account / onboarding system — see **§14 "What's been added since Phase 3"** at the bottom of this document.
@@ -859,7 +859,8 @@ Every simulation event published via Redis is immediately broadcast to all brows
 |--------|------|-------------|
 | GET | `/agents/:id` | Full agent profile: traits, state, skills, inventory, recent memories |
 | GET | `/agents/:id/relationships` | All relationships with other_agent names and scores |
-| GET | `/agents/:id/conversations` | Conversation history (limit param, default 10) |
+| GET | `/agents/:id/conversations` | Summary list of conversations the agent took part in (no `turns` payload, just `turn_count`). Default `limit=10`. |
+| GET | `/agents/:id/conversations/with/:partnerId` | Merged transcript of every conversation between two specific agents. Returns rows including the full `turns` JSONB, ordered oldest-first. Default `limit=200`. Powers the WhatsApp-style chat thread modal. |
 | GET | `/agents/:id/trades` | Trade history |
 | GET | `/agents/:id/group` | Current active group (404 if not in one) |
 | GET | `/agents/:id/reputation` | Reputation scores; returns neutral defaults if no reports yet |
@@ -1423,26 +1424,44 @@ From [packages/simulation/src/index.ts](../packages/simulation/src/index.ts), in
 
 The loop sleeps so the overall cadence is `SIMULATION_TICK_INTERVAL_MS` (default 5000 ms).
 
-### 14.10 UI: Conversation history & relationship tracking
+### 14.10 UI: WhatsApp-style chat thread (current)
 
-A new component `ConversationHistory.tsx` ([packages/web/src/components/ConversationHistory.tsx](../packages/web/src/components/ConversationHistory.tsx)) displays all past conversations between two agents in a scrollable, organized view:
+The earlier two-pane "ConversationHistory" view (left list / right transcript) has been replaced by a single merged thread modal that mirrors a chat application. The change addresses two complaints from real observation: (a) every recurring conversation between the same two agents created a duplicate row in the History tab, and (b) opening one row only ever showed a single transcript, hiding the long-arc relationship.
 
-**Layout:**
-- **Left sidebar** — List of all conversations with the selected relationship partner, sorted newest first. Each entry shows:
-  - Day and outcome badge (bonding, friendly, neutral, reconciliation, conflict, hostile)
-  - Number of turns in the conversation
-  - Highlight the currently selected conversation
-- **Right panel** — Full transcript of the selected conversation with:
-  - Speaker names, turn numbers, messages
-  - Optional thought display (toggle "show thoughts" button) — reveals each speaker's internal reasoning during the conversation
-  - Day/tick timestamps
+**Components**
 
-**Usage:**
-Open an agent profile → **Relations** tab → click any relationship → ConversationHistory opens. Provides full context of how the relationship has evolved: is it bonding, becoming hostile, reconciling after conflict, etc.
+- [packages/web/src/components/ChatThreadModal.tsx](../packages/web/src/components/ChatThreadModal.tsx) — the new modal. Receives `agentId`, `agentName`, `partnerId`, `partnerName`, `onClose`. Calls `GET /agents/:agentId/conversations/with/:partnerId?limit=200` (oldest first), flattens every `turns` array, tags each turn with its parent `day / tick / outcome / conversation_id`, then renders.
+- [packages/web/src/components/AgentProfile.tsx](../packages/web/src/components/AgentProfile.tsx) — the **History** tab now groups conversations by partner and shows one row per partner: avatar initial, partner name, last topic snippet, day badge, ± outcome counts (bonding/friendly vs hostile/conflict), and a total-conversations pill. Clicking the row opens `ChatThreadModal` for that partner.
 
-**Benefits:**
-- Observers can understand relationship dynamics at a glance
-- Track patterns in how agents interact (e.g., "Always conflict with X")
-- See thought processes alongside dialogue for deeper insight into agent reasoning
-- Timestamped history prevents missing relationship milestones
+**Visual layout**
+
+- **Header** — partner avatar + name, total messages and conversation count, and a `show / hide thoughts` toggle.
+- **Body** — vertical scroll, auto-scrolls to bottom on load.
+  - Inserts a `Day X · outcome` separator chip between conversations (so individual back-and-forths remain visually distinct inside the same thread). Outcome chips are colour-coded: bonding=green, friendly=blue, neutral=gray, reconciliation=teal, conflict=orange, hostile=red.
+  - The selected agent's messages appear on the **right** in a blue bubble (rounded except bottom-right). The partner's messages appear on the **left** in gray (rounded except bottom-left).
+  - When *show thoughts* is enabled, each bubble shows the speaker's internal `thought` ("💭 …") in italic gray underneath, aligned with the bubble.
+- **Empty state** — if the API returns no conversations between the pair, the body shows "No conversations with {partnerName} yet".
+
+**Backend**
+
+A dedicated endpoint was added in [packages/api/src/routes/social.ts](../packages/api/src/routes/social.ts):
+
+```sql
+SELECT c.conversation_id, c.tick, c.day, c.topic, c.outcome, c.created_at,
+       c.initiator_agent_id, c.target_agent_id, c.turns,
+       ia.name AS initiator_name, ta.name AS target_name
+FROM social.conversations c
+JOIN agents.agents ia ON ia.agent_id = c.initiator_agent_id
+JOIN agents.agents ta ON ta.agent_id = c.target_agent_id
+WHERE (c.initiator_agent_id = $1 AND c.target_agent_id = $2)
+   OR (c.initiator_agent_id = $2 AND c.target_agent_id = $1)
+ORDER BY c.tick ASC
+LIMIT $3
+```
+
+The general `/agents/:id/conversations` endpoint deliberately omits the (potentially large) `turns` JSONB and only returns `turn_count`. The new `/conversations/with/:partnerId` endpoint is the one place where `turns` is shipped, and only for the two-agent slice — keeping payloads small while making the merged thread possible in a single round-trip.
+
+**Type augmentation note**
+
+Building the API package now requires a `src/types/fastify.d.ts` declaration that augments `FastifyInstance` with the `authenticate` decorator and types `request.user` for the JWT plugin. See [packages/api/src/types/fastify.d.ts](../packages/api/src/types/fastify.d.ts).
 

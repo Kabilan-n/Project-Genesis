@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useGenesisStore } from '../lib/store.js';
-import { ConversationModal } from './ConversationModal.js';
+import { ChatThreadModal } from './ChatThreadModal.js';
 import { FamilyTree } from './FamilyTree.js';
 import clsx from 'clsx';
 
@@ -126,62 +126,42 @@ const OUTCOME_DOT: Record<string, string> = {
 };
 
 function PartnerThread({
-  partnerName, conversations, onOpenConv,
+  partnerName, conversations, onOpenChat,
 }: {
   partnerName: string;
   conversations: ConversationRow[];
-  onOpenConv: (id: string) => void;
+  onOpenChat: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const latest = conversations[0];
   const total = conversations.length;
-  // Count outcomes
   const positive = conversations.filter(c => c.outcome === 'bonding' || c.outcome === 'friendly').length;
   const negative = conversations.filter(c => c.outcome === 'hostile' || c.outcome === 'conflict').length;
+  const lastMsg = latest?.topic ? `"${latest.topic.slice(0, 38)}"` : latest?.outcome ?? '';
 
   return (
-    <div className="bg-gray-800/30 rounded-lg border border-gray-700/30 overflow-hidden">
-      {/* Partner header — always visible */}
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="w-full text-left px-3 py-2 hover:bg-gray-700/30 transition-colors flex items-center justify-between"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-600">{expanded ? '\u25BC' : '\u25B6'}</span>
-          <span className="text-xs font-medium text-gray-200">{partnerName}</span>
-          <span className="text-xs text-gray-500">{total} conversation{total !== 1 ? 's' : ''}</span>
+    <button
+      onClick={onOpenChat}
+      className="w-full text-left px-3 py-2.5 rounded-lg bg-gray-800/30 border border-gray-700/30 hover:bg-gray-700/40 transition-colors flex items-center gap-3"
+    >
+      <div className="w-8 h-8 rounded-full bg-gray-700/60 border border-gray-600/40 flex items-center justify-center text-xs font-bold text-gray-300 shrink-0">
+        {partnerName[0]}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-gray-200 truncate">{partnerName}</span>
+          <span className="text-xs text-gray-600 shrink-0">D{latest.day}</span>
         </div>
-        <div className="flex items-center gap-2">
-          {positive > 0 && <span className="text-xs text-green-400">+{positive}</span>}
-          {negative > 0 && <span className="text-xs text-red-400">-{negative}</span>}
-          <div className={clsx('w-2 h-2 rounded-full', OUTCOME_DOT[latest.outcome] ?? 'bg-gray-500')} />
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <span className="text-xs text-gray-500 truncate">{lastMsg}</span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {positive > 0 && <span className="text-[10px] text-green-400">+{positive}</span>}
+            {negative > 0 && <span className="text-[10px] text-red-400">-{negative}</span>}
+            <div className={clsx('w-2 h-2 rounded-full', OUTCOME_DOT[latest.outcome] ?? 'bg-gray-500')} />
+          </div>
         </div>
-      </button>
-
-      {/* Expanded — show individual conversations */}
-      {expanded && (
-        <div className="border-t border-gray-700/20 divide-y divide-gray-700/20">
-          {conversations.map(conv => (
-            <button
-              key={conv.conversation_id}
-              onClick={() => onOpenConv(conv.conversation_id)}
-              className="w-full text-left px-4 py-1.5 hover:bg-gray-700/40 transition-colors flex items-center justify-between"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <div className={clsx('w-1.5 h-1.5 rounded-full shrink-0', OUTCOME_DOT[conv.outcome] ?? 'bg-gray-500')} />
-                <span className="text-xs text-gray-400 truncate">
-                  {conv.topic ? `"${conv.topic.slice(0, 40)}"` : conv.outcome}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0 ml-2">
-                <span className="text-xs text-gray-600">{conv.turn_count}t</span>
-                <span className="text-xs text-gray-600">D{conv.day}</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      </div>
+      <span className="text-[10px] text-gray-600 shrink-0 bg-gray-700/40 px-1.5 py-0.5 rounded-full">{total}</span>
+    </button>
   );
 }
 
@@ -207,7 +187,7 @@ export function AgentProfile() {
   const [reputation, setReputation] = useState<ReputationDetail | null>(null);
   const [beliefs, setBeliefs] = useState<AgentBelief[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('status');
-  const [openConvId, setOpenConvId] = useState<string | null>(null);
+  const [chatPartner, setChatPartner] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     if (!selectedAgentId) { setAgent(null); setGroupDetail(null); setReputation(null); return; }
@@ -538,13 +518,13 @@ export function AgentProfile() {
             )}
             {(() => {
               // Group conversations by partner
-              const grouped = new Map<string, { name: string; convs: ConversationRow[] }>();
+              const grouped = new Map<string, { name: string; id: string; convs: ConversationRow[] }>();
               for (const conv of conversations) {
                 const isInitiator = conv.initiator_agent_id === selectedAgentId;
                 const partnerId = isInitiator ? conv.target_agent_id : conv.initiator_agent_id;
                 const partnerName = isInitiator ? conv.target_name : conv.initiator_name;
                 if (!grouped.has(partnerId)) {
-                  grouped.set(partnerId, { name: partnerName, convs: [] });
+                  grouped.set(partnerId, { name: partnerName, id: partnerId, convs: [] });
                 }
                 grouped.get(partnerId)!.convs.push(conv);
               }
@@ -553,7 +533,7 @@ export function AgentProfile() {
                   key={partnerId}
                   partnerName={name}
                   conversations={convs}
-                  onOpenConv={setOpenConvId}
+                  onOpenChat={() => setChatPartner({ id: partnerId, name })}
                 />
               ));
             })()}
@@ -571,11 +551,14 @@ export function AgentProfile() {
         )}
       </div>
 
-      {/* Conversation detail modal */}
-      {openConvId && (
-        <ConversationModal
-          conversationId={openConvId}
-          onClose={() => setOpenConvId(null)}
+      {/* WhatsApp-style chat thread modal */}
+      {chatPartner && agent && (
+        <ChatThreadModal
+          agentId={selectedAgentId!}
+          agentName={agent.name}
+          partnerId={chatPartner.id}
+          partnerName={chatPartner.name}
+          onClose={() => setChatPartner(null)}
         />
       )}
     </div>

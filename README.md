@@ -289,8 +289,8 @@ Agent-world/
 │   │       │   ├── PromptBuilder.ts           # Full prompts (~600-800 tokens)
 │   │       │   ├── PromptBuilderOptimised.ts  # Compact prompts (~150-250 tokens)
 │   │       │   └── providers/   # AnthropicClient, OpenAIClient, OllamaClient, HuggingFaceClient
-│   │       ├── db/migrations/   # SQL migrations (001–008)
-│   │       └── __tests__/       # 152 tests, 100% passing
+│   │       ├── db/migrations/   # SQL migrations (001–009)
+│   │       └── __tests__/       # 156 tests, 100% passing
 │   │
 │   ├── api/                     # Fastify REST + WebSocket server
 │   │   └── src/
@@ -307,6 +307,7 @@ Agent-world/
 │           ├── components/
 │           │   ├── WorldMap.tsx          # Canvas map with zoom/pan + fog of war
 │           │   ├── AgentProfile.tsx      # 5 tabs: status/relations/group/history/family
+│           │   ├── ChatThreadModal.tsx   # WhatsApp-style merged chat thread between two agents
 │           │   ├── EventFeed.tsx         # Real-time event stream
 │           │   ├── StatsBar.tsx          # Top bar with world stats
 │           │   ├── CivilisationPanel.tsx # Left sidebar: wars/beliefs/laws/chronicle
@@ -315,7 +316,7 @@ Agent-world/
 │           │   ├── LawPanel.tsx
 │           │   ├── ChroniclePanel.tsx
 │           │   ├── FamilyTree.tsx        # Ancestry / descendants tree
-│           │   ├── ConversationModal.tsx
+│           │   ├── ConversationModal.tsx # Single-conversation transcript (legacy)
 │           │   ├── CreateAgentModal.tsx  # 12-question soul-wizard → spawn your agent
 │           │   └── SettingsModal.tsx     # Shows current config & optimize status
 │           └── lib/
@@ -378,7 +379,8 @@ Migrations live in `packages/simulation/src/db/migrations/` and run in order:
 - `GET /agents/:id` — agent details
 - `GET /agents/:id/memories` — agent memories
 - `GET /agents/:id/relationships` — relationships
-- `GET /agents/:id/conversations` — conversation history
+- `GET /agents/:id/conversations` — summary list of conversations the agent was in (no transcript)
+- `GET /agents/:id/conversations/with/:partnerId` — full merged transcript of every conversation between two specific agents (turns included). Powers the WhatsApp-style chat thread.
 - `GET /agents/:id/biography` — LLM-generated biography
 - `GET /agents/:id/family` — ancestry + descendants
 - `GET /agents/:id/beliefs` — agent's beliefs
@@ -421,7 +423,7 @@ npm run test:watch  # watch mode
 npm run test:coverage
 ```
 
-**152 tests, 100% passing** across 8 test files covering all core modules. No real DB, Redis, or API calls in tests — fully isolated with Vitest mocks and sub-classing.
+**156 tests, 100% passing** across 8 test files covering all core modules. No real DB, Redis, or API calls in tests — fully isolated with Vitest mocks and sub-classing.
 
 See [TEST_REPORT.md](./TEST_REPORT.md) for the full breakdown.
 
@@ -448,8 +450,8 @@ npm run test         # Run simulation tests
 | **World Map** (center) | Canvas rendering of the 50×50 world. Scroll to zoom, drag to pan. Agents shown as colored dots (color = mental state). Unexplored tiles are rendered dark — the fog lifts incrementally as agents walk (polled every 5s). |
 | **Stats Bar** (top) | Day, tick, time-of-day, population count, current username with logout. Gear icon → Settings. ✨ icon → Create-agent wizard. |
 | **Civilisation Panel** (left, collapsible) | Wars, active beliefs, laws, chronicles. Click ▶ to expand. |
-| **Agent Profile** (right top) | Click any agent dot to open. 5 tabs: Status, Relations, Group, History, Family Tree. On **Relations** tab, click any relationship to open **Conversation History**. |
-| **Conversation History** | Scrollable view of all past conversations between two agents. Left sidebar lists all conversations (sorted newest first) with outcome badges. Right panel shows full transcript with optional thoughts. Helps track relationship evolution. |
+| **Agent Profile** (right top) | Click any agent dot to open. 5 tabs: Status, Relations, Group, **History**, Family Tree. The History tab lists every chat partner as a single row (avatar · name · last topic · day · ± outcome counts · total). |
+| **Chat Thread Modal** | Click a partner row in the History tab to open a WhatsApp-style scrollable thread. Every conversation between the two agents is merged into one chronological feed; "Day X · outcome" separators divide individual conversations. The selected agent's messages appear right-aligned in blue, the partner's left-aligned in gray. Toggle "show thoughts" in the header to see each speaker's internal thought beneath their message. |
 | **Event Feed** (right bottom) | Real-time stream of agent actions, conversations, trades, conflicts. |
 | **Create-Agent Modal** | 12 soul questions → name/appearance → your agent is spawned into the world with traits derived from your answers. |
 | **Settings Modal** | Shows active LLM provider, model, prompt optimisation status (enabled by default), and tick interval. |

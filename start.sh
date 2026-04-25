@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 echo "╔════════════════════════════════════╗"
 echo "║   Project Genesis - Startup         ║"
@@ -11,7 +10,11 @@ if [ ! -f .env ]; then
   echo "❌ .env not found. Run: cp .env.example .env"
   exit 1
 fi
-set -a; source .env; set +a
+# Strip Windows CRLF line endings before sourcing
+set -a; source <(tr -d '\r' < .env) ; set +a
+
+# Add common Windows Node.js paths for Git Bash
+export PATH="$PATH:/c/Program Files/nodejs:/c/Users/$USER/AppData/Roaming/nvm/current"
 
 # Check Docker
 if ! command -v docker &> /dev/null; then
@@ -20,9 +23,22 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # Check Node
-if ! command -v node &> /dev/null; then
-  echo "❌ Node.js not found. Install Node 20+ from https://nodejs.org"
-  exit 1
+if ! command -v node &> /dev/null && ! command -v node.exe &> /dev/null; then
+  echo "❌ Node.js not found in PATH. Trying common Windows locations..."
+  for p in \
+    "/c/Program Files/nodejs/node.exe" \
+    "/c/Program Files (x86)/nodejs/node.exe" \
+    "$LOCALAPPDATA/nvm/"*/node.exe; do
+    if [ -f "$p" ]; then
+      export PATH="$(dirname "$p"):$PATH"
+      echo "  Found Node at: $p"
+      break
+    fi
+  done
+  if ! command -v node &> /dev/null; then
+    echo "❌ Node.js not found. Install Node 20+ from https://nodejs.org"
+    exit 1
+  fi
 fi
 
 # Kill any running processes from previous session
@@ -36,8 +52,14 @@ echo ""
 echo "[1/5] 🐳 Starting Docker (PostgreSQL + Redis)..."
 docker compose down 2>/dev/null || true
 docker compose up -d
-echo "  Waiting for services..."
-sleep 6
+echo "  Waiting for postgres to be ready..."
+for i in $(seq 1 20); do
+  if docker exec genesis_postgres pg_isready -U genesis -q 2>/dev/null; then
+    echo "  ✓ Postgres ready"
+    break
+  fi
+  sleep 2
+done
 
 # 2. Install dependencies
 echo ""
@@ -47,7 +69,7 @@ npm install --legacy-peer-deps > /dev/null 2>&1 || npm install > /dev/null 2>&1
 # 3. Run migrations
 echo ""
 echo "[3/5] 📊 Running database migrations..."
-node db/migrate.js > /dev/null 2>&1
+npm run db:migrate
 
 # 4. Seed the world (only if WORLD_ID is empty)
 if [ -z "$WORLD_ID" ] || [ "$WORLD_ID" == "" ]; then

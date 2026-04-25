@@ -60,6 +60,26 @@ export async function socialRoutes(app: FastifyInstance) {
     );
   });
 
+  // Merged transcript of every conversation between two specific agents,
+  // including the full turns array for each. Used by the WhatsApp-style chat thread.
+  app.get('/agents/:id/conversations/with/:partnerId', async (req) => {
+    const { id, partnerId } = req.params as { id: string; partnerId: string };
+    const { limit = '200' } = req.query as { limit?: string };
+    return query<any>(
+      `SELECT c.conversation_id, c.tick, c.day, c.topic, c.outcome, c.created_at,
+              c.initiator_agent_id, c.target_agent_id, c.turns,
+              ia.name as initiator_name, ta.name as target_name
+       FROM social.conversations c
+       JOIN agents.agents ia ON ia.agent_id = c.initiator_agent_id
+       JOIN agents.agents ta ON ta.agent_id = c.target_agent_id
+       WHERE (c.initiator_agent_id = $1 AND c.target_agent_id = $2)
+          OR (c.initiator_agent_id = $2 AND c.target_agent_id = $1)
+       ORDER BY c.tick ASC
+       LIMIT $3`,
+      [id, partnerId, parseInt(limit)]
+    );
+  });
+
   // ── Trades ────────────────────────────────────────────────
 
   // Full trade record by ID
