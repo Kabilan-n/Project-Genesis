@@ -5,9 +5,9 @@
 >
 > **Operating principles for the executing agent:**
 > 1. **Base branch is `dev`** (not `main`). Before starting any phase, ensure `dev` is clean — commit and push any in-flight work first.
-> 2. **One branch per phase**, named `stabilization/phase-<N>-<short-slug>` (e.g. `stabilization/phase-1-critical-bugs`). All tasks within that phase land on the same branch as separate commits.
-> 3. **Checkpointing is at the phase level.** After all tasks in a phase are implemented, tested, and reviewed, merge the phase branch into `dev`. Do not proceed to the next phase until the current phase branch is merged.
-> 4. Within a phase, do tasks in the order listed. Each task gets its own commit with message `phase <N> / task <N.M>: <summary>`.
+> 2. **One branch per feature (or tightly-related feature set)**, named `stabilization/<phase>-<slug>` (e.g. `stabilization/1-decay-rate`, `stabilization/1-romantic-state`, `stabilization/4-resilience` if grouping circuit-breaker + logging + timeouts). A single task that stands alone gets its own branch; closely related tasks within a phase may share one branch when separating them would create artificial churn. Use judgment, but err on the side of smaller, more reviewable branches.
+> 3. **Checkpointing is at the phase level.** A phase is "done" only after every feature branch belonging to it has been implemented, tested, reviewed, and merged into `dev`. Do not proceed to the next phase until all branches from the current phase are merged.
+> 4. Within a phase, do tasks in the order listed. Commit messages: `phase <N> / task <N.M>: <summary>`.
 > 5. After each task, run the full test suite and ensure it passes before moving to the next task.
 > 6. If a task reveals additional bugs, document them in `FOLLOWUPS.md` rather than expanding scope.
 > 7. Every code change must include or update tests. No exceptions.
@@ -22,9 +22,9 @@
 >
 > **Phase Progress Tracker** (update at end of every session):
 >
-> | Phase | Status | Branch | Merged into `dev` |
-> |-------|--------|--------|-------------------|
-> | 0 — Preflight & Branch Setup | not started | — | — |
+> | Phase | Status | Branches | Merged into `dev` |
+> |-------|--------|----------|-------------------|
+> | 0 — Preflight & Branch Setup | in progress | `stabilization/0-preflight` | — |
 > | 1 — Critical Correctness Bugs | not started | — | — |
 > | 2 — Test Coverage Gaps | not started | — | — |
 > | 3 — Concurrency & Transactional Integrity | not started | — | — |
