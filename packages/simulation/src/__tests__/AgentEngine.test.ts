@@ -83,8 +83,8 @@ describe('AgentEngine.updateNeeds', () => {
     expect(updated.hp).toBeLessThan(80);
   });
 
-  it('recovers HP when all basic needs are well-met', () => {
-    const state = makeState({ hp: 60, need_food: 60, need_water: 60, need_rest: 40, is_awake: true });
+  it('recovers HP when all basic needs are well-met (> 60)', () => {
+    const state = makeState({ hp: 60, need_food: 80, need_water: 80, need_rest: 80, is_awake: true });
     const updated = engine.updateNeedsPublic(state, 1);
     expect(updated.hp).toBeGreaterThan(60);
   });
@@ -181,30 +181,105 @@ describe('AgentEngine.computeMentalState', () => {
   });
 });
 
-// ─── Need decay rate constants ────────────────────────────────────────────────
+// ─── Calibrated decay rates (post-stabilization) ─────────────────────────────
 
-describe('AgentEngine — need decay constants', () => {
-  it('food decays approximately 3 units per day (1440 ticks)', () => {
-    // DECAY.food = 3/1440; per tick the engine subtracts DECAY.food * 100 ≈ 0.208/tick
-    // Over 1440 ticks awake: 0.208 * 1440 ≈ 300 — scaled by 100 in the code
-    // The actual constant: need_food -= (3/1440) * 100 per tick = 0.20833
-    // Over 1440 ticks: 0.20833 * 1440 ≈ 300 units
-    let state = makeState({ need_food: 100, need_water: 100, need_rest: 50, is_awake: true });
-    for (let t = 0; t < 1440; t++) {
-      state = engine.updateNeedsPublic(state, t);
+describe('AgentEngine.updateNeeds — calibrated decay rates', () => {
+  /**
+   * Helper: drain a single need over `ticks` ticks while keeping the other
+   * physical needs pinned at 100 so they never enter critical range and
+   * skew HP. Returns the final state after the loop.
+   */
+  function drainOneNeed(
+    target: 'food' | 'water' | 'rest',
+    ticks: number,
+  ) {
+    let s = makeState({
+      need_food: 100, need_water: 100, need_rest: 100, hp: 100, is_awake: true,
+    });
+    for (let t = 1; t <= ticks; t++) {
+      s = engine.updateNeedsPublic(s, t);
+      if (target !== 'food')  s = { ...s, need_food: 100 };
+      if (target !== 'water') s = { ...s, need_water: 100 };
+      if (target !== 'rest')  s = { ...s, need_rest: 100 };
     }
-    // Food multiplied by 100 scale: 3/1440 * 100 * 1440 = 300 units, but capped at 100 → 0
-    // So after 1440 ticks need_food should be 0 (all used up)
-    expect(state.need_food).toBe(0);
+    return s;
+  }
+
+  it('food drains from 100 to 0 over ~2880 awake ticks (within 5%)', () => {
+    const s = drainOneNeed('food', 2880);
+    expect(s.need_food).toBeLessThanOrEqual(5);
+    expect(s.need_food).toBeGreaterThanOrEqual(0);
   });
 
-  it('water decays approximately 2 units per day (1440 ticks)', () => {
-    // DECAY.water = 2/1440; per tick: 2/1440 * 100 ≈ 0.139/tick
-    // Over 1440 ticks: 0.139 * 1440 ≈ 200 units — but need_water max is 100 → reaches 0
-    let state = makeState({ need_food: 100, need_water: 100, need_rest: 50, is_awake: true });
-    for (let t = 0; t < 1440; t++) {
-      state = engine.updateNeedsPublic(state, t);
-    }
-    expect(state.need_water).toBe(0);
+  it('water drains from 100 to 0 over ~2160 awake ticks (within 5%)', () => {
+    const s = drainOneNeed('water', 2160);
+    expect(s.need_water).toBeLessThanOrEqual(5);
+    expect(s.need_water).toBeGreaterThanOrEqual(0);
+  });
+
+  it('rest drains from 100 to 0 over ~1440 awake ticks (within 5%)', () => {
+    const s = drainOneNeed('rest', 1440);
+    expect(s.need_rest).toBeLessThanOrEqual(5);
+    expect(s.need_rest).toBeGreaterThanOrEqual(0);
+  });
+
+  it('sleeping halves food/water decay rate', () => {
+    const startAwake  = makeState({ need_food: 50, need_water: 50, is_awake: true });
+    const startAsleep = makeState({ need_food: 50, need_water: 50, is_awake: false });
+    const awake1  = engine.updateNeedsPublic(startAwake,  1);
+    const asleep1 = engine.updateNeedsPublic(startAsleep, 1);
+    expect(50 - asleep1.need_food).toBeCloseTo((50 - awake1.need_food) / 2,  6);
+    expect(50 - asleep1.need_water).toBeCloseTo((50 - awake1.need_water) / 2, 6);
+  });
+
+  it('sleeping recovers rest at +0.15 per tick', () => {
+    const start = makeState({ need_rest: 0, is_awake: false });
+    const after = engine.updateNeedsPublic(start, 1);
+    expect(after.need_rest).toBeCloseTo(0.15, 5);
+  });
+
+  it('multiple critical needs cause stacked HP damage (1 per critical need per tick)', () => {
+    // All three critical → -3 HP/tick
+    const start = makeState({
+      hp: 50, need_food: 1, need_water: 1, need_rest: 1, is_awake: true,
+    });
+    const after = engine.updateNeedsPublic(start, 1);
+    expect(50 - after.hp).toBeCloseTo(3, 5);
+  });
+
+  it('recovery only applies when ALL physical needs are strictly above 60', () => {
+    // need_rest = 60 exactly — strict > so recovery should NOT apply
+    const boundaryState = makeState({
+      hp: 50, need_food: 80, need_water: 80, need_rest: 60, is_awake: true,
+    });
+    const boundaryAfter = engine.updateNeedsPublic(boundaryState, 1);
+    expect(boundaryAfter.hp).toBeLessThanOrEqual(50);
+
+    // All three strictly above 60 — recovery applies
+    const eligibleState = makeState({
+      hp: 50, need_food: 80, need_water: 80, need_rest: 80, is_awake: true,
+    });
+    const eligibleAfter = engine.updateNeedsPublic(eligibleState, 1);
+    expect(eligibleAfter.hp).toBeGreaterThan(50);
+  });
+
+  it('tick 0 produces no decay', () => {
+    const start = makeState({
+      hp: 80, need_food: 50, need_water: 50, need_rest: 50, is_awake: true,
+    });
+    const after = engine.updateNeedsPublic(start, 0);
+    expect(after.need_food).toBe(start.need_food);
+    expect(after.need_water).toBe(start.need_water);
+    expect(after.need_rest).toBe(start.need_rest);
+    expect(after.hp).toBe(start.hp);
+  });
+
+  it('sleeping with food at 0 still applies starvation HP damage', () => {
+    const start = makeState({
+      hp: 50, need_food: 0, need_water: 50, need_rest: 50, is_awake: false,
+    });
+    const after = engine.updateNeedsPublic(start, 1);
+    expect(after.need_food).toBe(0);                  // floored
+    expect(after.hp).toBeCloseTo(49, 5);              // -1 from starvation
   });
 });
