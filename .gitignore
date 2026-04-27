@@ -11,3 +11,6 @@ dist/
 
 # Claude Code local settings (may contain API keys)
 .claude/settings.local.json
+
+# Stabilization plan (local, not tracked)
+GENESIS_REMEDIATION_PLAN.md
