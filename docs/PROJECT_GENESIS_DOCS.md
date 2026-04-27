@@ -1,6 +1,6 @@
 # Project Genesis — Complete Technical Documentation
 
-**Version:** Phases 1 – 6 + Generations + Fog of War + Accounts & Onboarding + Chat Thread UI  
+**Version:** Phases 1 – 6 + Generations + Fog of War + Accounts & Onboarding + Chat Thread UI + Per-Partner Memory  
 **Last updated:** 2026-04-25  
 **Stack:** TypeScript · Node.js · PostgreSQL 16 · Redis · Claude Haiku (Anthropic / OpenAI / Ollama / HuggingFace) · Next.js 14
 
@@ -62,6 +62,7 @@
     - 14.8 [LLM abstraction layer](#148-llm-abstraction-layer)
     - 14.9 [Full simulation tick order (current)](#149-full-simulation-tick-order-current)
     - 14.10 [UI: Conversation history & relationship tracking](#1410-ui-conversation-history--relationship-tracking)
+    - 14.11 [Per-partner memory & vector-ready storage (migration 010)](#1411-per-partner-memory--vector-ready-storage-migration-010)
 
 ---
 
@@ -1465,3 +1466,57 @@ The general `/agents/:id/conversations` endpoint deliberately omits the (potenti
 
 Building the API package now requires a `src/types/fastify.d.ts` declaration that augments `FastifyInstance` with the `authenticate` decorator and types `request.user` for the JWT plugin. See [packages/api/src/types/fastify.d.ts](../packages/api/src/types/fastify.d.ts).
 
+
+
+### 14.11 Per-partner memory & vector-ready storage (migration 010)
+
+**Problem:** Until now, conversations between two agents always read like first contact. Inspecting an agent profile would show 21 conversations with another agent, yet the LLM kept generating "Hello there! I am Sage, new to Genesis…" every time. The data was being stored, but none of it was being read back into the agent at conversation time.
+
+**Cause:** [`ConversationEngine.runConversation`](../packages/simulation/src/social/ConversationEngine.ts) only injected three things into the prompt: a relationship row (`type` + numeric scores), a single in-progress turn list, and three generic memories ordered by `importance DESC, tick DESC` — never filtered by partner. So even after 20 conversations, the speaker had no narrative context about the listener: just a number called `trust_score`.
+
+**Fix (immediate):**
+
+1. **Schema** — `db/migrations/010_partner_memory.sql` adds two columns to `memory.episodic_memories`:
+   - `partner_agent_ids UUID[]` (default `'{}'`) — list of agents this memory concerns. GIN-indexed for fast filtering.
+   - `embedding vector(1536)` (nullable) — ivfflat-indexed (cosine) so future semantic-recall can drop in without another migration.
+
+2. **Memory writes** — `ConversationEngine.writePartnerMemories(initiator, target, conv)` runs after `persist()`. It writes one row per participant tagged with the *other* agent in `partner_agent_ids`. The summary reads naturally when injected into a future prompt:
+
+   ```
+   Day 7: had a bonding conversation with Sage about "did you see the berries near the river?".
+   ```
+
+   Emotional valence and importance are derived from the conversation outcome (bonding=+0.8 / 0.75 importance, hostile=-0.8 / 0.85 importance, etc.). Hostile encounters are deliberately stored at **higher** importance than bonding ones — agents should remember enemies more sharply than friends.
+
+3. **New query methods** on ConversationEngine:
+   - `getMemoriesAboutPartner(agentId, partnerId)` — pulls top 3 memories where the partner is in `partner_agent_ids`, newest-first. Powers the "what you remember about ${partner}" prompt block.
+   - `getPartnerHistory(agentId, partnerId)` — pulls the last 3 conversations between the pair from `social.conversations`, returns compact `Day X: outcome — "topic"` strings. Powers the "your past conversations with ${partner}" block.
+
+4. **Prompt injection** — both `PromptBuilder` and `PromptBuilderOptimised` now accept two new optional parameters (`partnerHistory: string[]`, `partnerMemories: string[]`) on `buildConversationTurnPrompt`, and render them as dedicated sections before the generic recent-memories block. The verbose builder also adds a one-line nudge to the system instruction: *"Build on your shared history with ${listener.name} where relevant — don't introduce yourself again if you've spoken before."*
+
+   Token cost is modest:
+   - Optimised: +30–50 tokens per turn when history exists
+   - Verbose: +60–100 tokens per turn when history exists
+
+   Both blocks are omitted entirely when history is empty (first meeting), so brand-new pairs see no overhead.
+
+5. **Same-conversation efficiency** — partner history and partner memories are queried *once* per conversation (in parallel for both participants), not once per turn, since they don't change mid-conversation.
+
+**Recall layer (3 tiers, current)**
+
+| Tier | Source | Query | Use |
+|------|--------|-------|-----|
+| 1. General memory | `memory.episodic_memories` | `ORDER BY importance DESC, tick DESC LIMIT 3` | Background "what is on your mind" — same as before |
+| 2. Per-partner memory | `memory.episodic_memories WHERE partner ANY(partner_agent_ids)` | `ORDER BY tick DESC LIMIT 3` | "What you remember about *this* person" |
+| 3. Past conversations | `social.conversations` between the pair | `ORDER BY tick DESC LIMIT 3` | Shared history beats |
+
+**Vector layer (planned, plumbing already in place)**
+
+The `embedding vector(1536)` column and ivfflat index exist now; nothing populates them yet. To enable semantic recall:
+
+1. Add an `EmbeddingClient` (target dimensions: 1536 = OpenAI `text-embedding-3-small`, or rewire migration to 384 / 768 if using a local sentence-transformer / Ollama `nomic-embed-text`).
+2. On every memory write, embed `summary` and store it.
+3. Replace the `getMemoriesAboutPartner` / `getRecentMemories` queries with a hybrid: filter by `partner_agent_ids` (or world / agent), then `ORDER BY embedding <=> $queryEmbedding LIMIT 3` for cosine-distance recall.
+4. The query embedding can be the *current conversation context* (last few turns concatenated) — so an agent looking for memories during a tense moment surfaces past tense memories, not generic top-importance ones.
+
+This turns episodic memory from "bag of high-importance facts" into *associative recall*: the right memory for the right moment.

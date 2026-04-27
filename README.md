@@ -20,7 +20,7 @@ You observe through a real-time web UI. You cannot interfere.
 |-------|-------------|
 | **Survival** | Need decay (food/water/rest), HP damage, agent death |
 | **Social** | Multi-turn Claude conversations, relationship engine (trust/fear/affection), trade negotiations |
-| **Memory** | Importance-weighted memory decay, daily consolidation via LLM |
+| **Memory** | Importance-weighted decay, daily consolidation via LLM, **per-partner narrative memory** so agents recall past conversations about specific people (not just generic top-N) |
 | **Knowledge** | Gossip propagation, reputation scoring, knowledge sharing |
 | **Groups** | Form/join/leave factions, group leadership, defection |
 | **Conflict** | Wars, skirmishes, raids, peace treaties |
@@ -349,6 +349,7 @@ Migrations live in `packages/simulation/src/db/migrations/` and run in order:
 | `007_phase6_observer.sql` | Phase 6 | Snapshots, heatmaps, biographies |
 | `008_generations.sql` | Generations | Reproduction records, trait drift events |
 | `009_fog_of_war.sql` | Fog of war | `worlds.explored_tiles` — per-tile first-seen tick + first-observer agent |
+| `010_partner_memory.sql` | Partner memory | Adds `partner_agent_ids[]` (GIN-indexed) + nullable `embedding VECTOR(1536)` (ivfflat) to `memory.episodic_memories` for per-partner memory recall and future semantic retrieval |
 
 ---
 
@@ -510,12 +511,26 @@ The same 12 questions are mirrored in [CreateAgentModal.tsx](packages/web/src/co
 
 ---
 
+## Memory Architecture
+
+Each agent has three layers of recall, all backed by `memory.episodic_memories`:
+
+1. **Generic recent memory** — top 3 by importance, regardless of subject. Pulled into every conversation prompt as a "what's on your mind" slot.
+2. **Per-partner memory** — when a conversation ends, both participants record a memory tagged with the other agent's ID in `partner_agent_ids[]`. The summary includes day, outcome, and topic ("Day 7: had a bonding conversation with Sage about *foraging berries*"). When two agents talk again, each side's prompt includes a "what you remember about ${partner}" block, queried in O(log n) via a GIN index.
+3. **Past-conversation history** — the last 3 conversations between this exact pair (day · outcome · topic snippet) are pulled from `social.conversations` and shown in a "your past conversations with ${partner}" block. This is what stops agents introducing themselves on every meeting.
+
+The schema also has a nullable `embedding VECTOR(1536)` column on `episodic_memories` (ivfflat-indexed for cosine similarity) ready for semantic recall — when filled, agents will retrieve memories by *meaning* (e.g. "memories where I felt betrayed") rather than by tag or recency. Generation is opt-in and not yet wired to a provider.
+
+---
+
 ## Roadmap
 
 - [ ] Performance optimisation for larger populations (100+ agents)
 - [ ] Multiple concurrent worlds
 - [ ] Rich analytics dashboard (charts, trends, emergent pattern detection)
 - [ ] Research tools for studying agent behavior
+- [ ] **Memory embeddings** — populate `embedding` column via OpenAI / local model, swap importance-ordered recall for cosine-similarity recall against the current conversation context
 - [x] User accounts (registration / login / JWT)
 - [x] Fog-of-war observer layer
 - [x] Interactive onboarding wizard for user-authored agents
+- [x] Per-partner memory recall (no more "Hello stranger!" between agents who already bonded)

@@ -51,6 +51,20 @@ export class ConversationEngine {
     let lastMessage = openingMessage;
     let conversationEnded = false;
 
+    // Pull partner-specific context once — same for every turn in this
+    // conversation, so we don't query DB each iteration.
+    const [
+      initiatorPartnerHistory,
+      targetPartnerHistory,
+      initiatorPartnerMemories,
+      targetPartnerMemories,
+    ] = await Promise.all([
+      this.getPartnerHistory(initiator.agent_id, target.agent_id),
+      this.getPartnerHistory(target.agent_id, initiator.agent_id),
+      this.getMemoriesAboutPartner(initiator.agent_id, target.agent_id),
+      this.getMemoriesAboutPartner(target.agent_id, initiator.agent_id),
+    ]);
+
     // Run up to MAX_TURNS total (turn 1 is already done)
     for (let t = 2; t <= MAX_TURNS && !conversationEnded; t++) {
       // Swap speakers
@@ -58,6 +72,8 @@ export class ConversationEngine {
 
       const listenerRel = await this.getRelationshipBetween(lastSpeaker.agent_id, lastListener.agent_id);
       const recentMemories = await this.getRecentMemories(lastSpeaker.agent_id);
+      const partnerHistory  = lastSpeaker.agent_id === initiator.agent_id ? initiatorPartnerHistory  : targetPartnerHistory;
+      const partnerMemories = lastSpeaker.agent_id === initiator.agent_id ? initiatorPartnerMemories : targetPartnerMemories;
 
       const prompt = this.promptBuilder.buildConversationTurnPrompt(
         lastSpeaker,
@@ -68,7 +84,9 @@ export class ConversationEngine {
         recentMemories,
         tick,
         day,
-        t === MAX_TURNS // force_end on last turn
+        t === MAX_TURNS, // force_end on last turn
+        partnerHistory,
+        partnerMemories
       );
 
       const response = await this.llm.getConversationResponse(prompt);
@@ -111,6 +129,11 @@ export class ConversationEngine {
 
     const persisted = await this.persist(conversation);
 
+    // Write a partner-tagged memory for each participant so future
+    // conversations between this pair pull narrative context about
+    // each other, not just a numeric trust score.
+    await this.writePartnerMemories(initiator, target, persisted);
+
     // Phase 3: propagate knowledge and attempt skill teaching on positive outcomes
     if (persisted.outcome === 'bonding' || persisted.outcome === 'friendly') {
       await Promise.all([
@@ -120,6 +143,70 @@ export class ConversationEngine {
     }
 
     return persisted;
+  }
+
+  /**
+   * Persist one memory row per participant, tagged with the other
+   * agent in `partner_agent_ids`. The summary is built from the
+   * conversation outcome + the topic so it reads naturally when
+   * injected into a future prompt ("you bonded with Sage about berry-foraging").
+   */
+  private async writePartnerMemories(
+    initiator: Agent,
+    target: Agent,
+    conv: Conversation
+  ): Promise<void> {
+    const valenceByOutcome: Record<Conversation['outcome'], number> = {
+      bonding:        0.8,
+      friendly:       0.4,
+      neutral:        0.0,
+      reconciliation: 0.5,
+      conflict:       -0.5,
+      hostile:        -0.8,
+    };
+    const importanceByOutcome: Record<Conversation['outcome'], number> = {
+      bonding:        0.75,
+      friendly:       0.55,
+      neutral:        0.35,
+      reconciliation: 0.7,
+      conflict:       0.7,
+      hostile:        0.85,
+    };
+
+    const valence = valenceByOutcome[conv.outcome];
+    const importance = importanceByOutcome[conv.outcome];
+    const topicSnippet = (conv.topic ?? '').slice(0, 60);
+
+    const summaryFor = (selfName: string, otherName: string) =>
+      `Day ${conv.day}: had a ${conv.outcome} conversation with ${otherName}` +
+      (topicSnippet ? ` about "${topicSnippet}"` : '') + '.';
+
+    const initiatorSummary = summaryFor(initiator.name, target.name);
+    const targetSummary    = summaryFor(target.name, initiator.name);
+
+    const sql = `
+      INSERT INTO memory.episodic_memories
+        (agent_id, tick, day, summary, full_content, emotional_valence,
+         emotional_intensity, importance, current_strength, tags, partner_agent_ids)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1.0, $9, $10)
+    `;
+
+    await Promise.all([
+      execute(sql, [
+        initiator.agent_id, conv.tick, conv.day,
+        initiatorSummary, JSON.stringify(conv.turns),
+        valence, Math.min(1, Math.abs(valence) + 0.2), importance,
+        ['conversation', conv.outcome],
+        [target.agent_id],
+      ]),
+      execute(sql, [
+        target.agent_id, conv.tick, conv.day,
+        targetSummary, JSON.stringify(conv.turns),
+        valence, Math.min(1, Math.abs(valence) + 0.2), importance,
+        ['conversation', conv.outcome],
+        [initiator.agent_id],
+      ]),
+    ]);
   }
 
   private computeOutcome(turns: ConversationTurn[]): Conversation['outcome'] {
@@ -195,6 +282,41 @@ export class ConversationEngine {
       [agentId]
     );
     return rows.map(r => r.summary);
+  }
+
+  /**
+   * Memories where the partner is tagged in partner_agent_ids.
+   * Powers the "what do I remember about THIS person" slot in prompts.
+   */
+  private async getMemoriesAboutPartner(agentId: string, partnerId: string): Promise<string[]> {
+    const rows = await query<{ summary: string }>(
+      `SELECT summary FROM memory.episodic_memories
+       WHERE agent_id = $1
+         AND $2 = ANY(partner_agent_ids)
+       ORDER BY tick DESC
+       LIMIT 3`,
+      [agentId, partnerId]
+    );
+    return rows.map(r => r.summary);
+  }
+
+  /**
+   * Last few conversations between this exact pair, ordered newest-first.
+   * Returns compact "Day X · outcome · topic" strings for prompt injection.
+   */
+  private async getPartnerHistory(agentId: string, partnerId: string): Promise<string[]> {
+    const rows = await query<{ day: number; outcome: string; topic: string }>(
+      `SELECT day, outcome, topic
+       FROM social.conversations
+       WHERE (initiator_agent_id = $1 AND target_agent_id = $2)
+          OR (initiator_agent_id = $2 AND target_agent_id = $1)
+       ORDER BY tick DESC
+       LIMIT 3`,
+      [agentId, partnerId]
+    );
+    return rows.map(r =>
+      `Day ${r.day}: ${r.outcome}` + (r.topic ? ` — "${r.topic.slice(0, 50)}"` : '')
+    );
   }
 
   private async persist(conv: Conversation): Promise<Conversation> {

@@ -289,7 +289,9 @@ Respond ONLY with a JSON object (no markdown, no explanation):
     recentMemories: string[],
     _tick: number,
     day: number,
-    forceEnd: boolean
+    forceEnd: boolean,
+    partnerHistory: string[] = [],
+    partnerMemories: string[] = []
   ): string {
     const relDesc = listenerRel
       ? `${listenerRel.relationship_type} (trust: ${listenerRel.trust_score}, affection: ${listenerRel.affection_score})`
@@ -299,6 +301,16 @@ Respond ONLY with a JSON object (no markdown, no explanation):
       `  ${t.speaker_name}: "${t.message}"`
     ).join('\n');
 
+    const priorBlock = partnerHistory.length > 0
+      ? `\n=== YOUR PAST CONVERSATIONS WITH ${listener.name.toUpperCase()} ===\n` +
+        partnerHistory.map(s => `- ${s}`).join('\n') + '\n'
+      : '';
+
+    const partnerMemBlock = partnerMemories.length > 0
+      ? `\n=== WHAT YOU REMEMBER ABOUT ${listener.name.toUpperCase()} ===\n` +
+        partnerMemories.map(s => `- ${s}`).join('\n') + '\n'
+      : '';
+
     return `You are ${speaker.name}, a person in the world of Genesis. This is your actual life, not a game.
 
 === WHO YOU ARE ===
@@ -307,8 +319,8 @@ Mental state: ${speaker.state.mental_state} | HP: ${Math.round(speaker.state.hp)
 
 === YOUR RELATIONSHIP WITH ${listener.name.toUpperCase()} ===
 Relationship: ${relDesc}
-
-=== RECENT MEMORIES ===
+${priorBlock}${partnerMemBlock}
+=== RECENT MEMORIES (general) ===
 ${recentMemories.length > 0 ? recentMemories.map(m => `- ${m}`).join('\n') : '- Nothing recent'}
 
 === CONVERSATION SO FAR (Day ${day}) ===
@@ -319,7 +331,7 @@ ${history}
 
 ${forceEnd ? '(This is the last exchange — bring the conversation to a natural close.)' : ''}
 
-Respond as ${speaker.name}. Stay true to your personality and emotional state.
+Respond as ${speaker.name}. Stay true to your personality and emotional state. Build on your shared history with ${listener.name} where relevant — don't introduce yourself again if you've spoken before.
 
 Reply ONLY with JSON:
 {

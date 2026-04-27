@@ -94,6 +94,8 @@ JSON only:
     _tick: number,
     day: number,
     forceEnd: boolean,
+    partnerHistory: string[] = [],
+    partnerMemories: string[] = [],
   ): string {
     const relDesc = listenerRel
       ? `${listenerRel.relationship_type} trust:${listenerRel.trust_score}`
@@ -101,10 +103,12 @@ JSON only:
     const history = previousTurns.slice(-4).map(t => `${t.speaker_name}: "${t.message}"`).join('\n');
     const traits  = this.compactTraits(speaker.traits);
     const mem     = recentMemories.slice(0, 2).map(m => `• ${m.slice(0, 70)}`).join('\n');
+    const pHist   = partnerHistory.slice(0, 3).map(s => `• ${s}`).join('\n');
+    const pMem    = partnerMemories.slice(0, 3).map(s => `• ${s.slice(0, 80)}`).join('\n');
 
     return `${speaker.name} (${speaker.state.mental_state}${traits ? ', ' + traits : ''})
 with ${listener.name} [${relDesc}] Day ${day}
-${mem ? 'memories:\n' + mem + '\n' : ''}${history ? 'chat:\n' + history + '\n' : ''}${listener.name}: "${lastMessage}"
+${pHist ? `prior with ${listener.name}:\n` + pHist + '\n' : ''}${pMem ? `you remember about ${listener.name}:\n` + pMem + '\n' : ''}${mem ? 'recent memories:\n' + mem + '\n' : ''}${history ? 'chat:\n' + history + '\n' : ''}${listener.name}: "${lastMessage}"
 ${forceEnd ? '(wrap up conversation)' : ''}
 JSON only: {"thought":"1 sentence","speech":"1-3 sentences","is_ending":${forceEnd ? 'true' : 'false or true'}}`;
   }
