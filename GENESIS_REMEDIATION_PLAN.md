@@ -24,7 +24,7 @@
 >
 > | Phase | Status | Branches | Merged into `dev` |
 > |-------|--------|----------|-------------------|
-> | 0 — Preflight & Branch Setup | in progress | `stabilization/0-preflight` | — |
+> | 0 — Preflight & Branch Setup | ready for review | `stabilization/0-preflight` | — |
 > | 1 — Critical Correctness Bugs | not started | — | — |
 > | 2 — Test Coverage Gaps | not started | — | — |
 > | 3 — Concurrency & Transactional Integrity | not started | — | — |
