@@ -1,0 +1,21 @@
+
+> @genesis/simulation@1.0.0 test
+> vitest run --reporter=default
+
+
+ RUN  v4.1.4 D:/Project-Genesis/packages/simulation
+
+ ✓ src/__tests__/PromptBuilder.test.ts (23 tests) 15ms
+ ✓ src/__tests__/MapGenerator.test.ts (16 tests) 102ms
+ ✓ src/__tests__/ClaudeClient.test.ts (22 tests) 17ms
+ ✓ src/__tests__/RelationshipEngine.test.ts (24 tests) 13ms
+ ✓ src/__tests__/MemoryDecay.test.ts (17 tests) 14ms
+ ✓ src/__tests__/TradeEngine.test.ts (12 tests) 15ms
+ ✓ src/__tests__/ConversationEngine.test.ts (17 tests) 13ms
+ ✓ src/__tests__/AgentEngine.test.ts (25 tests) 14ms
+
+ Test Files  8 passed (8)
+      Tests  156 passed (156)
+   Start at  18:04:39
+   Duration  1.39s (transform 1.60s, setup 0ms, import 3.85s, tests 202ms, environment 1ms)
+
