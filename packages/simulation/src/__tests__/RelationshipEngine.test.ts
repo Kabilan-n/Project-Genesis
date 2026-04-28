@@ -5,24 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { RelationshipEngine } from '../social/RelationshipEngine.js';
 
-// Expose private determineType
-class TestableRelationshipEngine extends RelationshipEngine {
-  determineTypePublic(rel: {
-    trust_score: number;
-    affection_score: number;
-    respect_score: number;
-    fear_score: number;
-    interaction_count: number;
-    positive_interaction_count: number;
-    negative_interaction_count: number;
-  }) {
-    return (this as any).determineType(rel);
-  }
-}
-
-const engine = new TestableRelationshipEngine();
-
-function rel(overrides: Partial<{
+type RelInput = {
   trust_score: number;
   affection_score: number;
   respect_score: number;
@@ -30,7 +13,21 @@ function rel(overrides: Partial<{
   interaction_count: number;
   positive_interaction_count: number;
   negative_interaction_count: number;
-}> = {}) {
+  relationship_type?: string;
+  is_romantic_candidate?: boolean;
+  partner_status_blocks_romance?: boolean;
+};
+
+// Expose private determineType
+class TestableRelationshipEngine extends RelationshipEngine {
+  determineTypePublic(rel: RelInput) {
+    return (this as any).determineType(rel);
+  }
+}
+
+const engine = new TestableRelationshipEngine();
+
+function rel(overrides: Partial<RelInput> = {}): RelInput {
   return {
     trust_score: 30,
     affection_score: 20,
@@ -79,32 +76,88 @@ describe('RelationshipEngine.determineType — rival', () => {
 });
 
 // ─── romantic_partner ─────────────────────────────────────────────────────────
-// NOTE: close_friend check runs before romantic_partner in determineType.
-// close_friend requires interactions≥15 + positive_interactions≥10.
-// romantic_partner requires interactions≥10.
-// So romantic_partner fires when 10≤interactions<15 (or positive_interactions<10).
 
 describe('RelationshipEngine.determineType — romantic_partner', () => {
-  it('returns "romantic_partner" when trust ≥ 85, affection ≥ 90, interactions ≥ 10 but < 15', () => {
-    // interaction_count=12 means close_friend (needs ≥15) won't fire, so romantic_partner fires
+  it('reaches "romantic_partner" when trust ≥ 80, affection ≥ 85, interactions ≥ 4, candidate flag set', () => {
     expect(engine.determineTypePublic(rel({
-      trust_score: 90, affection_score: 95, interaction_count: 12, positive_interaction_count: 8,
+      trust_score: 80, affection_score: 85, interaction_count: 4,
+      positive_interaction_count: 3, is_romantic_candidate: true,
     }))).toBe('romantic_partner');
   });
 
-  it('does NOT return "romantic_partner" when affection is 89', () => {
+  it('does NOT reach "romantic_partner" without is_romantic_candidate', () => {
+    // Same scores as the success case, but candidacy flag absent.
     const type = engine.determineTypePublic(rel({
-      trust_score: 90, affection_score: 89, interaction_count: 12,
+      trust_score: 90, affection_score: 95, interaction_count: 12,
+      positive_interaction_count: 8,
     }));
     expect(type).not.toBe('romantic_partner');
   });
 
-  it('close_friend fires before romantic_partner when interaction_count ≥ 15 and positive ≥ 10', () => {
-    // close_friend check runs first: trust≥80 + affection≥70 + interactions≥15 + positive≥10
+  it('does NOT reach "romantic_partner" when partner_status_blocks_romance is true', () => {
+    // Either side already in a romantic_partner relationship — falls through.
     const type = engine.determineTypePublic(rel({
-      trust_score: 90, affection_score: 95, interaction_count: 16, positive_interaction_count: 12,
+      trust_score: 90, affection_score: 95, interaction_count: 12,
+      positive_interaction_count: 8, is_romantic_candidate: true,
+      partner_status_blocks_romance: true,
+    }));
+    expect(type).not.toBe('romantic_partner');
+  });
+
+  it('promotes to romantic_partner BEFORE close_friend when conditions are met', () => {
+    // The new ordering puts romantic_partner ahead of close_friend, even with
+    // interactions ≥ 15 + positive ≥ 10 that previously triggered close_friend.
+    const type = engine.determineTypePublic(rel({
+      trust_score: 90, affection_score: 95, interaction_count: 16,
+      positive_interaction_count: 12, is_romantic_candidate: true,
+    }));
+    expect(type).toBe('romantic_partner');
+  });
+
+  it('falls through to close_friend when candidacy flag is absent', () => {
+    const type = engine.determineTypePublic(rel({
+      trust_score: 90, affection_score: 95, interaction_count: 16,
+      positive_interaction_count: 12,
     }));
     expect(type).toBe('close_friend');
+  });
+});
+
+// ─── post-pairing transitions ─────────────────────────────────────────────────
+
+describe('RelationshipEngine.determineType — post-pairing transitions', () => {
+  it('keeps "romantic_partner" when trust dips below 80 but stays ≥ 50', () => {
+    const type = engine.determineTypePublic(rel({
+      trust_score: 65, affection_score: 80, interaction_count: 20,
+      positive_interaction_count: 15, relationship_type: 'romantic_partner',
+    }));
+    expect(type).toBe('romantic_partner');
+  });
+
+  it('fades to "friend" when partnered and trust drops below 50', () => {
+    const type = engine.determineTypePublic(rel({
+      trust_score: 45, affection_score: 60, interaction_count: 20,
+      positive_interaction_count: 15, relationship_type: 'romantic_partner',
+    }));
+    expect(type).toBe('friend');
+  });
+
+  it('breaks up to "acquaintance" when partnered and affection drops below 30', () => {
+    const type = engine.determineTypePublic(rel({
+      trust_score: 70, affection_score: 25, fear_score: 10,
+      interaction_count: 20, positive_interaction_count: 15,
+      relationship_type: 'romantic_partner',
+    }));
+    expect(type).toBe('acquaintance');
+  });
+
+  it('breaks up to "enemy" when partnered, affection collapses, and fear > 50', () => {
+    const type = engine.determineTypePublic(rel({
+      trust_score: 70, affection_score: 25, fear_score: 60,
+      interaction_count: 20, positive_interaction_count: 15,
+      relationship_type: 'romantic_partner',
+    }));
+    expect(type).toBe('enemy');
   });
 });
 
@@ -223,10 +276,20 @@ describe('RelationshipEngine.determineType — priority ordering', () => {
     expect(type).toBe('enemy');
   });
 
-  it('close_friend takes priority over romantic_partner when interactions ≥ 15 and positive ≥ 10', () => {
-    // close_friend check runs first: trust≥80 + affection≥70 + interactions≥15 + positive≥10
-    // Even though romantic_partner threshold (trust≥85 + affection≥90) is also met,
-    // close_friend fires first due to code order
+  it('romantic_partner takes priority over close_friend when candidacy flag is set', () => {
+    // Reordered priority — romantic_partner is now checked BEFORE close_friend,
+    // gated on the candidacy flag.
+    const type = engine.determineTypePublic(rel({
+      trust_score: 90,
+      affection_score: 92,
+      interaction_count: 16,
+      positive_interaction_count: 12,
+      is_romantic_candidate: true,
+    }));
+    expect(type).toBe('romantic_partner');
+  });
+
+  it('close_friend takes priority when candidacy flag is absent', () => {
     const type = engine.determineTypePublic(rel({
       trust_score: 90,
       affection_score: 92,

@@ -1271,6 +1271,9 @@ export class AgentEngine {
       [tick, agent.agent_id]
     );
 
+    // Surviving partners transition to `widowed`.
+    await this.relationshipEngine.markWidowed(agent.agent_id);
+
     const cause = state.need_food < 5 ? 'starvation'
       : state.need_water < 5 ? 'dehydration' : 'exhaustion';
 
