@@ -39,3 +39,14 @@ resolved it; do not delete the entry.
   daemon was not running at baseline-capture time, so `migrate && seed` and
   `npm run dev` boot-against-clean-DB checks were not executed. Re-run when
   Docker is available; the unit-test baseline (156 passing) is captured.
+- **Phase 1 / Task 1.4 — non-Anthropic providers still use regex fallback.**
+  `OpenAIClient`, `OllamaClient`, `HuggingFaceClient`, and the deprecated
+  `ClaudeClient.ts` all extract JSON-from-prose with `text.match(/\{[\s\S]*\}/)`
+  and ad-hoc field validation. The plan's task 1.4 was scoped to
+  AnthropicClient. Apply the same Zod-via-`schemas.ts` rewrite to the other
+  providers when Phase 4 task 4.1 (circuit breakers) touches them, or sooner
+  if a new provider is wired in. `ClaudeClient.ts` itself is removed by
+  Phase 7 task 7.1.
+- **Phase 1 / Task 1.4 — `ADDING_PROVIDERS.md` shows the regex pattern.**
+  The provider-authoring guide demonstrates the now-deprecated parser style.
+  Update when other providers are migrated to Zod.
