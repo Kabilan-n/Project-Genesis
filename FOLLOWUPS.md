@@ -21,7 +21,17 @@ resolved it; do not delete the entry.
 
 ## Open Questions
 
-_None yet._
+- **Phase 1.2 — `openness` trait does not exist in this schema.** The plan's
+  candidacy gate requires "both agents have `traits.openness >= 50`", but the
+  trait list in `agents.agent_traits` (and `fixtures.makeTraits`) has no
+  `openness`. We proxied with `curiosity` (closest Big-Five-aligned trait).
+  Confirm with design owner whether to (a) keep the proxy, (b) add a real
+  `openness` column, or (c) average curiosity + creativity.
+- **Phase 1.2 — migration numbering shifted by 1.** Plan reserves 010 for
+  romantic candidacy and 011 for widowed state, but `010_partner_memory.sql`
+  was already in flight (committed `3900abe7`). New migrations land as
+  `011_romantic_candidacy.sql` and `012_widowed_state.sql`; downstream Phase 1
+  migrations (consolidation_state, refresh_tokens, idempotency) shift up by 1.
 
 ## Deferred Improvements
 
@@ -29,3 +39,14 @@ _None yet._
   daemon was not running at baseline-capture time, so `migrate && seed` and
   `npm run dev` boot-against-clean-DB checks were not executed. Re-run when
   Docker is available; the unit-test baseline (156 passing) is captured.
+- **Phase 1 / Task 1.4 — non-Anthropic providers still use regex fallback.**
+  `OpenAIClient`, `OllamaClient`, `HuggingFaceClient`, and the deprecated
+  `ClaudeClient.ts` all extract JSON-from-prose with `text.match(/\{[\s\S]*\}/)`
+  and ad-hoc field validation. The plan's task 1.4 was scoped to
+  AnthropicClient. Apply the same Zod-via-`schemas.ts` rewrite to the other
+  providers when Phase 4 task 4.1 (circuit breakers) touches them, or sooner
+  if a new provider is wired in. `ClaudeClient.ts` itself is removed by
+  Phase 7 task 7.1.
+- **Phase 1 / Task 1.4 — `ADDING_PROVIDERS.md` shows the regex pattern.**
+  The provider-authoring guide demonstrates the now-deprecated parser style.
+  Update when other providers are migrated to Zod.

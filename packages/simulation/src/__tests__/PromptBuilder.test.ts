@@ -249,3 +249,93 @@ describe('PromptBuilder.buildTradeDecisionPrompt', () => {
     expect(prompt).toContain('"counter"');
   });
 });
+
+// ─── Mode comparison: verbose vs compact ────────────────────────────────────
+
+describe('PromptBuilder — mode comparison', () => {
+  const verbose = new PromptBuilder('verbose');
+  const compact = new PromptBuilder('compact');
+
+  it('verbose mode includes "=== HEADER ===" section markers', () => {
+    const prompt = verbose.buildDecisionPrompt(makeAgent(), [], [], makePerception(), 100, 1);
+    expect(prompt).toContain('=== WHO YOU ARE ===');
+    expect(prompt).toContain('=== YOUR CURRENT STATE ===');
+  });
+
+  it('compact mode does NOT use "=== HEADER ===" markers', () => {
+    const prompt = compact.buildDecisionPrompt(makeAgent(), [], [], makePerception(), 100, 1);
+    expect(prompt).not.toContain('=== WHO YOU ARE ===');
+    expect(prompt).not.toContain('=== YOUR CURRENT STATE ===');
+  });
+
+  it('compact mode uses key:value style (e.g. hp:N)', () => {
+    const prompt = compact.buildDecisionPrompt(
+      makeAgent({ state: makeState({ hp: 73 }) }), [], [], makePerception(), 100, 1
+    );
+    expect(prompt).toMatch(/hp:73/);
+  });
+
+  it('compact mode produces at least 60% fewer chars than verbose for same input', () => {
+    // Token count is a function of provider; chars are a stable proxy.
+    const agent = makeAgent();
+    const v = verbose.buildDecisionPrompt(agent, [], ['mem one'], makePerception(), 100, 1);
+    const c = compact.buildDecisionPrompt(agent, [], ['mem one'], makePerception(), 100, 1);
+    const reduction = 1 - (c.length / v.length);
+    expect(reduction).toBeGreaterThanOrEqual(0.6);
+  });
+
+  it('default mode is verbose', () => {
+    const pb = new PromptBuilder();
+    expect(pb.mode).toBe('verbose');
+    const prompt = pb.buildDecisionPrompt(makeAgent(), [], [], makePerception(), 100, 1);
+    expect(prompt).toContain('=== WHO YOU ARE ===');
+  });
+
+  it('compact mode in conversation prompt omits verbose section markers', () => {
+    const v = verbose.buildConversationTurnPrompt(
+      makeAgent(), makeAgentB(), [], 'Hi.', null, [], 100, 1, false
+    );
+    const c = compact.buildConversationTurnPrompt(
+      makeAgent(), makeAgentB(), [], 'Hi.', null, [], 100, 1, false
+    );
+    expect(v).toContain('=== YOUR RELATIONSHIP WITH BOB ===');
+    expect(c).not.toContain('=== YOUR RELATIONSHIP WITH BOB ===');
+  });
+
+  it('both modes emit a JSON-only schema for trade decisions', () => {
+    const offer = { offered_items: { food: 5 }, requested_items: { water: 3 } };
+    const v = verbose.buildTradeDecisionPrompt(makeAgent(), makeAgentB(), offer, [], null, 100, 1);
+    const c = compact.buildTradeDecisionPrompt(makeAgent(), makeAgentB(), offer, [], null, 100, 1);
+    expect(v).toContain('"decision"');
+    expect(c).toContain('"decision"');
+  });
+});
+
+// ─── resolvePromptMode helper ───────────────────────────────────────────────
+
+describe('resolvePromptMode', () => {
+  it('returns compact when env value is "true"', async () => {
+    const { resolvePromptMode } = await import('../llm/PromptBuilder.js');
+    expect(resolvePromptMode('true')).toBe('compact');
+  });
+
+  it('returns compact when env value is "compact"', async () => {
+    const { resolvePromptMode } = await import('../llm/PromptBuilder.js');
+    expect(resolvePromptMode('compact')).toBe('compact');
+  });
+
+  it('returns verbose when env value is undefined', async () => {
+    const { resolvePromptMode } = await import('../llm/PromptBuilder.js');
+    expect(resolvePromptMode(undefined)).toBe('verbose');
+  });
+
+  it('returns verbose when env value is "false"', async () => {
+    const { resolvePromptMode } = await import('../llm/PromptBuilder.js');
+    expect(resolvePromptMode('false')).toBe('verbose');
+  });
+
+  it('returns verbose for unknown values (and warns)', async () => {
+    const { resolvePromptMode } = await import('../llm/PromptBuilder.js');
+    expect(resolvePromptMode('banana')).toBe('verbose');
+  });
+});

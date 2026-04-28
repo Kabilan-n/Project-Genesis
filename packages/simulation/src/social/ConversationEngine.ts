@@ -1,8 +1,7 @@
 import { query, queryOne, execute } from '../db.js';
 import { LLMFactory } from '../llm/LLMFactory.js';
 import type { LLMClient } from '../llm/types.js';
-import { PromptBuilder } from '../llm/PromptBuilder.js';
-import { PromptBuilderOptimised } from '../llm/PromptBuilderOptimised.js';
+import { PromptBuilder, resolvePromptMode } from '../llm/PromptBuilder.js';
 import { KnowledgeEngine } from '../cultural/KnowledgeEngine.js';
 import type {
   Agent, Conversation, ConversationTurn, Relationship, RelationshipDelta
@@ -10,16 +9,21 @@ import type {
 
 const MAX_TURNS = 4; // 2 exchanges (A→B→A→B)
 
+// Candidacy gate: a bonding conversation flips both sides into "romantically
+// eligible" only when affection is already substantial and both agents are
+// open to new experiences. No `openness` trait exists in this schema, so we
+// proxy with `curiosity` — the closest Big-Five-aligned trait we track.
+const ROMANTIC_CANDIDACY_AFFECTION_FLOOR = 70;
+const ROMANTIC_CANDIDACY_OPENNESS_FLOOR  = 50;
+
 export class ConversationEngine {
   private llm: LLMClient;
-  private promptBuilder: PromptBuilder | PromptBuilderOptimised;
+  private promptBuilder: PromptBuilder;
   private knowledgeEngine: KnowledgeEngine;
 
   constructor() {
     this.llm = LLMFactory.fromEnv();
-    this.promptBuilder = process.env.OPTIMIZE_PROMPTS === 'true'
-      ? new PromptBuilderOptimised()
-      : new PromptBuilder();
+    this.promptBuilder = new PromptBuilder(resolvePromptMode(process.env.OPTIMIZE_PROMPTS));
     this.knowledgeEngine = new KnowledgeEngine();
   }
 
@@ -142,7 +146,43 @@ export class ConversationEngine {
       ]);
     }
 
+    // Phase 1.2: a bonding conversation between two open, already-affectionate
+    // agents flips the romantic-candidacy flag for the pair. The flag is what
+    // unlocks the `romantic_partner` state in determineType.
+    if (persisted.outcome === 'bonding' &&
+        this.shouldFlagRomanticCandidacy(initiator, target)) {
+      await this.flagRomanticCandidacy(initiator.agent_id, target.agent_id);
+    }
+
     return persisted;
+  }
+
+  /**
+   * Pure check: bonding outcome + existing affection ≥ 70 + both agents'
+   * openness-proxy (curiosity) ≥ 50. Affection is read from the live
+   * relationship rows by the caller via flagRomanticCandidacy.
+   */
+  shouldFlagRomanticCandidacy(initiator: Agent, target: Agent): boolean {
+    return (
+      initiator.traits.curiosity >= ROMANTIC_CANDIDACY_OPENNESS_FLOOR &&
+      target.traits.curiosity    >= ROMANTIC_CANDIDACY_OPENNESS_FLOOR
+    );
+  }
+
+  /**
+   * Flip is_romantic_candidate symmetrically across the pair, but only if
+   * the live affection score is already ≥ 70 on both sides. The check is
+   * inside the SQL so we don't race a second conversation.
+   */
+  private async flagRomanticCandidacy(agentA: string, agentB: string): Promise<void> {
+    await execute(
+      `UPDATE social.relationships
+       SET is_romantic_candidate = TRUE
+       WHERE ((agent_id = $1 AND other_agent_id = $2)
+           OR (agent_id = $2 AND other_agent_id = $1))
+         AND affection_score >= $3`,
+      [agentA, agentB, ROMANTIC_CANDIDACY_AFFECTION_FLOOR]
+    );
   }
 
   /**

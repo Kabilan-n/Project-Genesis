@@ -1,7 +1,20 @@
 import { execute, queryOne } from '../db.js';
 import type { Agent, Conversation, TradeRecord, RelationshipDelta } from '../types.js';
 
-type RelType = 'stranger' | 'acquaintance' | 'friend' | 'close_friend' | 'romantic_partner' | 'rival' | 'enemy' | 'family';
+type RelType =
+  | 'stranger' | 'acquaintance' | 'friend' | 'close_friend'
+  | 'romantic_partner' | 'rival' | 'enemy' | 'family' | 'widowed';
+
+// Romantic-partner thresholds. Lowered interaction_count from prior implicit
+// (>=10 by close_friend dominance) to >=4 so the state is reachable.
+const ROMANCE_TRUST_FLOOR     = 80;
+const ROMANCE_AFFECTION_FLOOR = 85;
+const ROMANCE_INTERACTIONS    = 4;
+
+// Post-pairing transitions.
+const ROMANCE_FADE_TRUST      = 50; // partner stays until trust dips below this
+const BREAKUP_AFFECTION_FLOOR = 30; // affection collapse triggers breakup
+const BREAKUP_TO_ENEMY_FEAR   = 50; // breakup-to-enemy if fear exceeds this
 
 /**
  * Manages relationship score evolution and type upgrades.
@@ -143,11 +156,12 @@ export class RelationshipEngine {
       interaction_count: number;
       positive_interaction_count: number;
       negative_interaction_count: number;
-      relationship_type: string;
+      relationship_type: RelType;
+      is_romantic_candidate: boolean;
     }>(
       `SELECT trust_score, affection_score, respect_score, fear_score,
               interaction_count, positive_interaction_count, negative_interaction_count,
-              relationship_type
+              relationship_type, is_romantic_candidate
        FROM social.relationships
        WHERE agent_id = $1 AND other_agent_id = $2`,
       [agentId, otherId]
@@ -155,16 +169,73 @@ export class RelationshipEngine {
 
     if (!rel) return;
 
-    const newType = this.determineType(rel);
+    // `widowed` is a terminal state set explicitly when a partner dies; the
+    // determineType state machine never assigns or escapes it.
+    if (rel.relationship_type === 'widowed') return;
+
+    // Monogamy gate: only consider promoting to romantic_partner if neither
+    // side is already paired with someone else.
+    const partnerStatusBlocksRomance =
+      (await this.hasExistingPartner(agentId, otherId)) ||
+      (await this.hasExistingPartner(otherId, agentId));
+
+    const newType = this.determineType({
+      ...rel,
+      partner_status_blocks_romance: partnerStatusBlocksRomance,
+    });
+
     if (newType !== rel.relationship_type) {
+      // Stamp romantic_started_tick the first time we transition into the
+      // partnered state so post-pairing transitions can reason about it.
+      const stampClause = newType === 'romantic_partner' && rel.relationship_type !== 'romantic_partner'
+        ? ', romantic_started_tick = COALESCE(romantic_started_tick, last_interaction_tick)'
+        : '';
       await execute(
-        `UPDATE social.relationships SET relationship_type = $1
+        `UPDATE social.relationships
+         SET relationship_type = $1${stampClause}
          WHERE agent_id = $2 AND other_agent_id = $3`,
         [newType, agentId, otherId]
       );
     }
   }
 
+  /**
+   * Returns true if `agentId` is currently in any `romantic_partner`
+   * relationship excluding `excludeOtherId`. Used by the monogamy gate.
+   */
+  async hasExistingPartner(agentId: string, excludeOtherId?: string): Promise<boolean> {
+    const row = await queryOne<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM social.relationships
+         WHERE agent_id = $1
+           AND relationship_type = 'romantic_partner'
+           AND ($2::uuid IS NULL OR other_agent_id <> $2)
+       ) AS exists`,
+      [agentId, excludeOtherId ?? null]
+    );
+    return row?.exists ?? false;
+  }
+
+  /**
+   * Mark every relationship pointing AT a deceased agent as `widowed` for
+   * the surviving side. Called from AgentEngine.killAgent.
+   */
+  async markWidowed(deceasedAgentId: string): Promise<void> {
+    await execute(
+      `UPDATE social.relationships
+       SET relationship_type = 'widowed'
+       WHERE other_agent_id = $1
+         AND relationship_type = 'romantic_partner'`,
+      [deceasedAgentId]
+    );
+  }
+
+  /**
+   * Pure relationship-type state machine. All inputs are passed in;
+   * no DB calls. The orchestrator (`upgradeRelationshipType`) is
+   * responsible for fetching `partner_status_blocks_romance` and
+   * the current `relationship_type`.
+   */
   private determineType(rel: {
     trust_score: number;
     affection_score: number;
@@ -173,25 +244,54 @@ export class RelationshipEngine {
     interaction_count: number;
     positive_interaction_count: number;
     negative_interaction_count: number;
+    relationship_type?: RelType;
+    is_romantic_candidate?: boolean;
+    partner_status_blocks_romance?: boolean;
   }): RelType {
-    const { trust_score, affection_score, respect_score, fear_score, interaction_count, positive_interaction_count } = rel;
+    const {
+      trust_score, affection_score, respect_score, fear_score,
+      interaction_count, positive_interaction_count,
+      relationship_type, is_romantic_candidate, partner_status_blocks_romance,
+    } = rel;
 
-    // Enemy: very low trust and high fear or hostility
+    // Enemy: very low trust and high fear or hostility.
     if (trust_score < 15 && (fear_score > 50 || affection_score < 5)) return 'enemy';
 
-    // Rival: low trust but high respect (competing)
+    // Rival: low trust but high respect (competing).
     if (trust_score < 30 && respect_score > 50) return 'rival';
 
-    // Close friend: requires deep sustained trust + many positive interactions
+    // ─── Post-pairing transitions ────────────────────────────────────────
+    // Once paired, the relationship persists through dips. Only an
+    // affection collapse breaks the pair; trust dipping below 50 fades it
+    // to a friendship state.
+    if (relationship_type === 'romantic_partner') {
+      if (affection_score < BREAKUP_AFFECTION_FLOOR) {
+        return fear_score > BREAKUP_TO_ENEMY_FEAR ? 'enemy' : 'acquaintance';
+      }
+      if (trust_score < ROMANCE_FADE_TRUST) return 'friend';
+      return 'romantic_partner';
+    }
+
+    // ─── Promote to romantic_partner ─────────────────────────────────────
+    // Evaluated BEFORE close_friend so the high-trust, high-affection,
+    // candidacy-flagged path doesn't get swallowed by the friend ladder.
+    if (
+      is_romantic_candidate === true &&
+      partner_status_blocks_romance !== true &&
+      trust_score >= ROMANCE_TRUST_FLOOR &&
+      affection_score >= ROMANCE_AFFECTION_FLOOR &&
+      interaction_count >= ROMANCE_INTERACTIONS
+    ) {
+      return 'romantic_partner';
+    }
+
+    // Close friend: requires deep sustained trust + many positive interactions.
     if (trust_score >= 80 && affection_score >= 70 && interaction_count >= 15 && positive_interaction_count >= 10) return 'close_friend';
 
-    // Romantic partner: very high affection + trust + meaningful history
-    if (trust_score >= 85 && affection_score >= 90 && interaction_count >= 10) return 'romantic_partner';
-
-    // Friend: substantial trust built over time
+    // Friend: substantial trust built over time.
     if (trust_score >= 55 && affection_score >= 40 && interaction_count >= 8 && positive_interaction_count >= 5) return 'friend';
 
-    // Acquaintance: a few positive meetings
+    // Acquaintance: a few positive meetings.
     if (interaction_count >= 3 && trust_score >= 20) return 'acquaintance';
 
     return 'stranger';

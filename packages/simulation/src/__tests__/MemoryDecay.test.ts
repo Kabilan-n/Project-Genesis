@@ -3,21 +3,34 @@
  *   - runDecayPass: calls decayStrength every tick, consolidation only on day boundary
  *   - consolidateBatch: prompt construction, deletion + insertion, fallback
  *   - decay formula: memories with higher importance decay slower
+ *   - injected deps: no real DB, no real LLM
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MemoryDecay } from '../social/MemoryDecay.js';
+import { describe, it, expect, vi } from 'vitest';
+import { MemoryDecay, type MemoryDecayDeps } from '../social/MemoryDecay.js';
 import { WORLD_ID } from './fixtures.js';
 
-// ─── Testable sub-class ─────────────────────────────────────────────────────
+// ─── Test deps factory ──────────────────────────────────────────────────────
+
+function makeDeps(overrides: Partial<MemoryDecayDeps> = {}): MemoryDecayDeps {
+  return {
+    db: {
+      execute: vi.fn().mockResolvedValue(undefined),
+      query:   vi.fn().mockResolvedValue([]),
+    },
+    llm: {
+      getRawCompletion: vi.fn().mockResolvedValue('a condensed summary'),
+    },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    ...overrides,
+  };
+}
 
 class TestableMemoryDecay extends MemoryDecay {
-  // Track how many times each private method was called
   decayStrengthCallCount = 0;
   consolidateWeakCallCount = 0;
 
-  constructor() {
-    super();
-    // Stub out all DB + Claude calls in private methods
+  constructor(deps: MemoryDecayDeps) {
+    super(deps);
     (this as any).decayStrength = vi.fn().mockImplementation(() => {
       this.decayStrengthCallCount++;
       return Promise.resolve();
@@ -33,88 +46,146 @@ class TestableMemoryDecay extends MemoryDecay {
 
 describe('MemoryDecay.runDecayPass', () => {
   it('calls decayStrength on every tick', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 100);
     expect(md.decayStrengthCallCount).toBe(1);
   });
 
   it('does NOT call consolidateWeakMemories on a non-day-boundary tick', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 500);
     expect(md.consolidateWeakCallCount).toBe(0);
   });
 
   it('calls consolidateWeakMemories at tick 1440 (day boundary)', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 1440);
     expect(md.consolidateWeakCallCount).toBe(1);
   });
 
   it('calls consolidateWeakMemories at tick 2880 (second day boundary)', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 2880);
     expect(md.consolidateWeakCallCount).toBe(1);
   });
 
   it('does NOT call consolidateWeakMemories at tick 0', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 0);
     expect(md.consolidateWeakCallCount).toBe(0);
   });
 
   it('calls both decayStrength and consolidation on day boundary', async () => {
-    const md = new TestableMemoryDecay();
+    const md = new TestableMemoryDecay(makeDeps());
     await md.runDecayPass(WORLD_ID, 1440);
     expect(md.decayStrengthCallCount).toBe(1);
     expect(md.consolidateWeakCallCount).toBe(1);
   });
 });
 
-// ─── consolidateBatch prompt-building (no DB needed) ────────────────────────
+// ─── consolidateBatch behavior with injected deps ───────────────────────────
 
-describe('MemoryDecay.consolidateBatch — prompt content', () => {
-  const memories = [
-    { memory_id: 'm1', summary: 'Found berries near the lake.', tick: 100, importance: 0.3, emotional_valence: 0.2 },
-    { memory_id: 'm2', summary: 'Talked to Bob briefly.',       tick: 110, importance: 0.2, emotional_valence: 0.1 },
-    { memory_id: 'm3', summary: 'Got rained on all day.',        tick: 120, importance: 0.1, emotional_valence: -0.2 },
-    { memory_id: 'm4', summary: 'Saw a deer in the forest.',     tick: 130, importance: 0.25, emotional_valence: 0.3 },
-    { memory_id: 'm5', summary: 'Slept by the river.',           tick: 140, importance: 0.15, emotional_valence: 0.0 },
-  ];
+const memories = [
+  { memory_id: 'm1', summary: 'Found berries near the lake.', tick: 100, importance: 0.3, emotional_valence: 0.2 },
+  { memory_id: 'm2', summary: 'Talked to Bob briefly.',       tick: 110, importance: 0.2, emotional_valence: 0.1 },
+  { memory_id: 'm3', summary: 'Got rained on all day.',        tick: 120, importance: 0.1, emotional_valence: -0.2 },
+  { memory_id: 'm4', summary: 'Saw a deer in the forest.',     tick: 130, importance: 0.25, emotional_valence: 0.3 },
+  { memory_id: 'm5', summary: 'Slept by the river.',           tick: 140, importance: 0.15, emotional_valence: 0.0 },
+];
 
-  it('builds a Claude prompt that includes all memory summaries', () => {
-    // We verify the prompt construction directly without calling DB
-    const summaryText = memories.map((m, i) => `${i + 1}. ${m.summary}`).join('\n');
-    const agentName = 'Alice';
-    const prompt = `You are condensing ${agentName}'s old memories into a brief summary.\nOld memories (in order):\n${summaryText}\n\nWrite ONE concise sentence (max 100 chars) summarizing what these experiences add up to for ${agentName}.\nReply with ONLY the summary sentence, nothing else.`;
+describe('MemoryDecay.consolidateBatch — happy path', () => {
+  it('asks the LLM for a condensed summary, then deletes + inserts', async () => {
+    const deps = makeDeps();
+    const md = new MemoryDecay(deps);
+    await md.consolidateBatch('agent-1', 'Alice', memories, 1440, 1);
 
-    expect(prompt).toContain('Found berries near the lake.');
-    expect(prompt).toContain('Talked to Bob briefly.');
-    expect(prompt).toContain('Got rained on all day.');
-    expect(prompt).toContain('Alice');
+    expect(deps.llm.getRawCompletion).toHaveBeenCalledOnce();
+    const promptArg = (deps.llm.getRawCompletion as any).mock.calls[0][0];
+    expect(promptArg).toContain('Alice');
+    expect(promptArg).toContain('Found berries near the lake.');
+
+    // 1 DELETE + 1 INSERT
+    expect(deps.db.execute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MemoryDecay.consolidateBatch — LLM failure fallback', () => {
+  it('falls back to a deterministic summary when the LLM throws', async () => {
+    const deps = makeDeps({
+      llm: { getRawCompletion: vi.fn().mockRejectedValue(new Error('llm down')) },
+    });
+    const md = new MemoryDecay(deps);
+    await md.consolidateBatch('agent-1', 'Alice', memories, 1440, 1);
+
+    // INSERT call is the second db.execute; its 4th param is the summary text.
+    const inserts = (deps.db.execute as any).mock.calls.filter(
+      (c: any[]) => /INSERT INTO memory\.episodic_memories/.test(c[0]),
+    );
+    expect(inserts).toHaveLength(1);
+    const summary = inserts[0][1][3] as string;
+    expect(summary).toContain('Vague memories from Day 1');
+    expect(summary).toContain('5 events');
+
+    // Logged the LLM failure
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-1' }),
+      'consolidation_llm_failed',
+    );
+  });
+});
+
+describe('MemoryDecay.consolidateBatch — DB retry on transient failure', () => {
+  it('retries the DELETE up to 3 times before giving up', async () => {
+    let attempts = 0;
+    const deleteFn = vi.fn().mockImplementation(async (sql: string) => {
+      if (/DELETE FROM memory\.episodic_memories/.test(sql)) {
+        attempts++;
+        if (attempts < 3) throw new Error('transient db blip');
+      }
+      return undefined;
+    });
+
+    const deps = makeDeps({
+      db: { execute: deleteFn, query: vi.fn().mockResolvedValue([]) },
+    });
+    const md = new MemoryDecay(deps);
+    await md.consolidateBatch('agent-1', 'Alice', memories, 1440, 1);
+
+    // 3 DELETE attempts (2 fail + 1 success) + 1 INSERT
+    expect(deleteFn).toHaveBeenCalledTimes(4);
+  });
+});
+
+// ─── Idempotency on resume ──────────────────────────────────────────────────
+
+describe('MemoryDecay.resumePendingConsolidations', () => {
+  it('is a no-op when there are no pending runs', async () => {
+    const deps = makeDeps();
+    const md = new MemoryDecay(deps);
+    await md.resumePendingConsolidations(WORLD_ID, 5);
+
+    // One SELECT to look for pending runs, nothing else.
+    expect(deps.db.query).toHaveBeenCalledTimes(1);
+    expect(deps.logger.info).not.toHaveBeenCalled();
   });
 
-  it('computes average emotional valence correctly', () => {
-    const valences = memories.map(m => m.emotional_valence);
-    const avg = valences.reduce((s, v) => s + v, 0) / valences.length;
-    // 0.2 + 0.1 + (-0.2) + 0.3 + 0.0 = 0.4 / 5 = 0.08
-    expect(avg).toBeCloseTo(0.08, 5);
-  });
+  it('iterates each pending row and logs the resume count', async () => {
+    const queryFn = vi.fn()
+      // 1st call: pending list
+      .mockResolvedValueOnce([
+        { agent_id: 'a1', day: 1 },
+        { agent_id: 'a2', day: 1 },
+      ])
+      // For each agent: name lookup + claim attempt + weak memories query
+      .mockResolvedValue([{ name: 'Alice' }]);
+    const deps = makeDeps({ db: { execute: vi.fn().mockResolvedValue(undefined), query: queryFn } });
+    const md = new MemoryDecay(deps);
+    await md.resumePendingConsolidations(WORLD_ID, 5);
 
-  it('picks max importance across memories', () => {
-    const maxImportance = Math.max(...memories.map(m => m.importance));
-    expect(maxImportance).toBe(0.3);
-  });
-
-  it('final consolidated importance is slightly higher than max source importance (+ 0.1)', () => {
-    const maxImportance = Math.max(...memories.map(m => m.importance));
-    const finalImportance = Math.min(0.7, maxImportance + 0.1);
-    expect(finalImportance).toBe(0.4);
-  });
-
-  it('fallback summary mentions "Vague memories from Day X"', () => {
-    // The fallback used in consolidateBatch when Claude throws
-    const fallback = `Vague memories from Day ${Math.floor(memories[0].tick / 1440)}`;
-    expect(fallback).toContain('Vague memories from Day 0');
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ count: 2 }),
+      'consolidation_resume_pending',
+    );
   });
 });
 
@@ -162,7 +233,7 @@ describe('MemoryDecay — decay formula math', () => {
     let strength = 1.0;
     const importance = 0.9;
     const decayPerTick = DECAY_RATE * (1 - importance * 0.7);
-    const ticks = 100; // 100 ticks ≈ a few minutes
+    const ticks = 100;
     for (let i = 0; i < ticks; i++) {
       strength = Math.max(0, strength - decayPerTick);
     }

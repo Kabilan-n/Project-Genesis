@@ -4,6 +4,8 @@ import Redis from 'ioredis';
 import { WorldEngine } from './world/WorldEngine.js';
 import { AgentEngine } from './agent/AgentEngine.js';
 import { MemoryDecay } from './social/MemoryDecay.js';
+import { LLMFactory } from './llm/LLMFactory.js';
+import { execute as dbExecute, query as dbQuery } from './db.js';
 import { GroupEngine } from './cultural/GroupEngine.js';
 // Phase 5 — Conflict & Governance
 import { ConflictEngine } from './conflict/ConflictEngine.js';
@@ -37,7 +39,15 @@ async function main() {
   // ── Engine instantiation ───────────────────────────────────────────────────
   const worldEngine      = new WorldEngine(WORLD_ID);
   const agentEngine      = new AgentEngine(worldEngine, redis);
-  const memoryDecay      = new MemoryDecay();
+  const memoryDecay      = new MemoryDecay({
+    db:  { execute: dbExecute, query: dbQuery },
+    llm: LLMFactory.fromEnv(),
+    logger: {
+      info:  (obj, msg) => console.log('[MemoryDecay]',  msg ?? '', obj),
+      warn:  (obj, msg) => console.warn('[MemoryDecay]', msg ?? '', obj),
+      error: (obj, msg) => console.error('[MemoryDecay]', msg ?? '', obj),
+    },
+  });
   const groupEngine      = new GroupEngine();
   const conflictEngine   = new ConflictEngine();
   const beliefEngine     = new BeliefEngine();
@@ -53,6 +63,16 @@ async function main() {
 
   process.on('SIGINT',  () => { running = false; });
   process.on('SIGTERM', () => { running = false; });
+
+  // Recover any consolidation passes that were in flight when the process
+  // last exited. Idempotent: if there are none, this is a single SELECT.
+  try {
+    const startupTick = await worldEngine.getCurrentTick();
+    const startupDay  = Math.floor(startupTick / 1440);
+    await memoryDecay.resumePendingConsolidations(WORLD_ID, startupDay);
+  } catch (err) {
+    console.error('[Simulation] resumePendingConsolidations failed:', err);
+  }
 
   while (running) {
     const start = Date.now();

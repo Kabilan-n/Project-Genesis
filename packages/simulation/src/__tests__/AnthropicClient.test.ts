@@ -1,11 +1,17 @@
 /**
  * Tests for AnthropicClient's private parser methods.
- * We expose them by sub-classing — no real API calls required.
+ *
+ * Post-stabilization (phase 1 / task 1.4):
+ *   - All payloads are validated with Zod schemas.
+ *   - The regex-extract-from-prose fallback was removed; malformed JSON
+ *     goes straight to a SAFE_DEFAULT_* sentinel and increments a metric.
+ *   - SAFE_DEFAULT_* objects are identifiable by their
+ *     `[parse failure fallback]` marker.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { AnthropicClient } from '../llm/providers/AnthropicClient.js';
+import { metrics } from '../observability/metrics.js';
 
-// Expose private parsers for testing via type-cast
 class TestableAnthropicClient extends AnthropicClient {
   parseDecisionPublic(text: string) {
     return (this as any).parseDecision(text);
@@ -20,14 +26,18 @@ class TestableAnthropicClient extends AnthropicClient {
 
 const client = new TestableAnthropicClient('claude-haiku-4-5-20251001');
 
+beforeEach(() => {
+  metrics.llmParseFailures.reset();
+  metrics.llmCallErrors.reset();
+});
+
 // ─── parseDecision ──────────────────────────────────────────────────────────
 
-describe('ClaudeClient.parseDecision', () => {
+describe('AnthropicClient.parseDecision', () => {
   it('parses a clean JSON decision', () => {
     const text = JSON.stringify({
       thought: 'I need food urgently.',
       action: 'gather food',
-      speech: undefined,
     });
     const result = client.parseDecisionPublic(text);
     expect(result.thought).toBe('I need food urgently.');
@@ -41,16 +51,19 @@ describe('ClaudeClient.parseDecision', () => {
     expect(result.action).toBe('rest');
   });
 
-  it('falls back to regex extraction when JSON is embedded in prose', () => {
+  it('returns SAFE_DEFAULT_DECISION when JSON is embedded in prose (no regex fallback)', () => {
     const text = 'Sure! Here is my decision: {"thought":"looking around","action":"do_nothing"}';
     const result = client.parseDecisionPublic(text);
+    expect(result.thought).toBe('[parse failure fallback]');
     expect(result.action).toBe('do_nothing');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
   });
 
-  it('returns safe default when text is unparseable', () => {
+  it('returns SAFE_DEFAULT_DECISION when text is unparseable', () => {
     const result = client.parseDecisionPublic('I have no idea what to do!!');
-    expect(result.thought).toBeTruthy();
+    expect(result.thought).toBe('[parse failure fallback]');
     expect(result.action).toBe('do_nothing');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
   });
 
   it('preserves optional speech field', () => {
@@ -65,7 +78,7 @@ describe('ClaudeClient.parseDecision', () => {
     expect(result.target).toBe('water');
   });
 
-  it('preserves trade_offer when present', () => {
+  it('preserves nested trade_offer structure', () => {
     const offer = { offered_items: { food: 10 }, requested_items: { water: 5 } };
     const text = JSON.stringify({
       thought: 'lets trade',
@@ -83,11 +96,48 @@ describe('ClaudeClient.parseDecision', () => {
     expect(result.target).toBeUndefined();
     expect(result.trade_offer).toBeUndefined();
   });
+
+  it('rejects when required field `thought` is missing', () => {
+    const text = JSON.stringify({ action: 'rest' });
+    const result = client.parseDecisionPublic(text);
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
+  });
+
+  it('rejects when speech exceeds length limit (500 chars)', () => {
+    const text = JSON.stringify({
+      thought: 'long-winded',
+      action: 'talk Bob',
+      speech: 'x'.repeat(501),
+    });
+    const result = client.parseDecisionPublic(text);
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
+  });
+
+  it('rejects null payload as parse failure', () => {
+    const result = client.parseDecisionPublic('null');
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
+  });
+
+  it('strips unknown extra fields silently (default Zod object behavior)', () => {
+    const text = JSON.stringify({
+      thought: 'hi',
+      action: 'rest',
+      banana: 'should be ignored',
+    });
+    const result = client.parseDecisionPublic(text);
+    expect(result.action).toBe('rest');
+    expect((result as any).banana).toBeUndefined();
+    // No metric increment — strip-unknowns is success, not failure.
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(0);
+  });
 });
 
 // ─── parseConversationTurn ──────────────────────────────────────────────────
 
-describe('ClaudeClient.parseConversationTurn', () => {
+describe('AnthropicClient.parseConversationTurn', () => {
   it('parses a standard conversation response', () => {
     const text = JSON.stringify({
       thought: 'This seems friendly.',
@@ -116,35 +166,38 @@ describe('ClaudeClient.parseConversationTurn', () => {
     expect(result.speech).toBe('ok');
   });
 
-  it('returns safe defaults for unparseable text', () => {
+  it('returns SAFE_DEFAULT_CONVERSATION_TURN for unparseable text', () => {
     const result = client.parseConversationPublic('uhhh...');
-    expect(result.thought).toBeTruthy();
-    expect(result.speech).toBeTruthy();
-    expect(typeof result.is_ending).toBe('boolean');
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(result.is_ending).toBe(true);
+    expect(metrics.llmParseFailures.get({ type: 'conversation' })).toBe(1);
   });
 
-  it('defaults is_ending to false when field missing', () => {
+  it('rejects when required is_ending field is missing', () => {
     const text = JSON.stringify({ thought: 'thinking', speech: 'Hello there' });
     const result = client.parseConversationPublic(text);
-    expect(result.is_ending).toBe(false);
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'conversation' })).toBe(1);
   });
 
-  it('defaults thought to placeholder when missing', () => {
+  it('rejects when required thought is missing', () => {
     const text = JSON.stringify({ speech: 'Sure!', is_ending: false });
     const result = client.parseConversationPublic(text);
-    expect(result.thought).toBeTruthy();
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'conversation' })).toBe(1);
   });
 
-  it('falls back to regex extraction when JSON is embedded in prose', () => {
+  it('returns SAFE_DEFAULT when JSON is embedded in prose (no regex fallback)', () => {
     const text = 'Response: {"thought":"wondering","speech":"I see","is_ending":false} - done';
     const result = client.parseConversationPublic(text);
-    expect(result.speech).toBe('I see');
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'conversation' })).toBe(1);
   });
 });
 
 // ─── parseTradeResponse ─────────────────────────────────────────────────────
 
-describe('ClaudeClient.parseTradeResponse', () => {
+describe('AnthropicClient.parseTradeResponse', () => {
   it('parses an accept decision', () => {
     const text = JSON.stringify({
       thought: 'Good deal.',
@@ -182,20 +235,35 @@ describe('ClaudeClient.parseTradeResponse', () => {
     expect(result.counter_offer).toEqual(counter);
   });
 
-  it('normalises invalid decision to reject', () => {
+  it('rejects counter decision without counter_offer', () => {
+    const text = JSON.stringify({
+      thought: 'I want a better deal.',
+      decision: 'counter',
+      // counter_offer missing — refine() rejects this
+    });
+    const result = client.parseTradePublic(text);
+    expect(result.decision).toBe('reject');                  // safe default
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'trade' })).toBe(1);
+  });
+
+  it('rejects unknown decision verb', () => {
     const text = JSON.stringify({
       thought: 'hmm',
       decision: 'maybe',
       reason: 'not sure',
     });
     const result = client.parseTradePublic(text);
-    expect(result.decision).toBe('reject');
+    expect(result.decision).toBe('reject');                  // safe default
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'trade' })).toBe(1);
   });
 
-  it('returns safe default for unparseable text', () => {
+  it('returns SAFE_DEFAULT_TRADE_RESPONSE for unparseable text', () => {
     const result = client.parseTradePublic('No JSON here at all');
     expect(result.decision).toBe('reject');
-    expect(result.thought).toBeTruthy();
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'trade' })).toBe(1);
   });
 
   it('strips code fences before parsing', () => {
@@ -204,9 +272,29 @@ describe('ClaudeClient.parseTradeResponse', () => {
     expect(result.decision).toBe('accept');
   });
 
-  it('uses default thought when field missing', () => {
+  it('rejects when required thought field is missing', () => {
     const text = JSON.stringify({ decision: 'accept', reason: 'fair' });
     const result = client.parseTradePublic(text);
-    expect(result.thought).toBeTruthy();
+    expect(result.thought).toBe('[parse failure fallback]');
+    expect(metrics.llmParseFailures.get({ type: 'trade' })).toBe(1);
+  });
+});
+
+// ─── metrics counter behavior ───────────────────────────────────────────────
+
+describe('AnthropicClient — parse failure metrics', () => {
+  it('separates parse failures by type', () => {
+    client.parseDecisionPublic('not json');
+    client.parseConversationPublic('not json');
+    client.parseTradePublic('not json');
+    expect(metrics.llmParseFailures.get({ type: 'decision' })).toBe(1);
+    expect(metrics.llmParseFailures.get({ type: 'conversation' })).toBe(1);
+    expect(metrics.llmParseFailures.get({ type: 'trade' })).toBe(1);
+    expect(metrics.llmParseFailures.total()).toBe(3);
+  });
+
+  it('does not increment on a successful parse', () => {
+    client.parseDecisionPublic(JSON.stringify({ thought: 'x', action: 'rest' }));
+    expect(metrics.llmParseFailures.total()).toBe(0);
   });
 });

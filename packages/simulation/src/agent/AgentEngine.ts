@@ -1,8 +1,7 @@
 import { query, queryOne, execute } from '../db.js';
 import { LLMFactory } from '../llm/LLMFactory.js';
 import type { LLMClient } from '../llm/types.js';
-import { PromptBuilder } from '../llm/PromptBuilder.js';
-import { PromptBuilderOptimised } from '../llm/PromptBuilderOptimised.js';
+import { PromptBuilder, resolvePromptMode } from '../llm/PromptBuilder.js';
 import type {
   Agent, AgentState, AgentTraits, AgentDecision,
   PerceptionContext, Relationship, AgentKnowledge, Group, GossipClaim
@@ -19,26 +18,35 @@ import { GovernanceEngine } from '../conflict/GovernanceEngine.js';
 import { BeliefEngine } from '../cultural/BeliefEngine.js';
 import type { Redis } from 'ioredis';
 
-// Need decay per tick (tick = 1 sim-minute)
+// Need decay per tick (1 tick = 1 sim-minute, 1440 ticks = 1 in-game day).
+// Calibrated so a full bar (100) drains over a target number of awake ticks.
+//   food:  drains 100 → 0 over 2 days (2880 ticks)
+//   water: drains 100 → 0 over 1.5 days (2160 ticks)  — water more urgent
+//   rest:  drains 100 → 0 over 1 day (1440 ticks)     — rest most urgent
 const DECAY = {
-  food:  3 / 1440,   // -3/day
-  water: 2 / 1440,   // -2/day
-  rest:  6 / 24 / 60, // ~0.00417/tick awake
+  food:  100 / 2880,
+  water: 100 / 2160,
+  rest:  100 / 1440,
 };
 
-// HP damage kicks in earlier (below 10, not 5) and bites harder,
-// so ignored survival has visible, quick consequences.
-const HP_DAMAGE = {
-  starvation:   20 / 1440,  // food < 10
-  dehydration:  30 / 1440,  // water < 10
-  exhaustion:   10 / 1440,  // rest < 10
-};
+// While sleeping: food and water decay at half rate; rest recovers.
+const SLEEP_DECAY_MULTIPLIER = 0.5;
+const SLEEP_REST_RECOVERY    = 0.15; // ~667 ticks (0 → 100) ≈ 11 game-hours
 
-const HP_RECOVERY = 5 / 1440; // needs met
+// HP damage: 1 HP per tick per need that has dropped below the critical
+// threshold. Damages stack: an agent that is starving AND dehydrated
+// AND exhausted loses 3 HP/tick.
+const HP_CRITICAL_THRESHOLD = 5;
+const HP_DAMAGE_PER_CRITICAL_NEED = 1;
+
+// HP recovery: when all three physical needs are well above the floor
+// and HP is not already full, HP recovers at +0.5/tick.
+const HP_RECOVERY_PER_TICK   = 0.5;
+const HP_RECOVERY_NEED_FLOOR = 60;
 
 export class AgentEngine {
   private llm: LLMClient;
-  private promptBuilder: PromptBuilder | PromptBuilderOptimised;
+  private promptBuilder: PromptBuilder;
   private conversationEngine: ConversationEngine;
   private relationshipEngine: RelationshipEngine;
   private tradeEngine: TradeEngine;
@@ -54,9 +62,7 @@ export class AgentEngine {
     private redis: Redis
   ) {
     this.llm = LLMFactory.fromEnv();
-    this.promptBuilder = process.env.OPTIMIZE_PROMPTS === 'true'
-      ? new PromptBuilderOptimised()
-      : new PromptBuilder();
+    this.promptBuilder = new PromptBuilder(resolvePromptMode(process.env.OPTIMIZE_PROMPTS));
     this.conversationEngine = new ConversationEngine();
     this.relationshipEngine = new RelationshipEngine();
     this.tradeEngine = new TradeEngine();
@@ -159,36 +165,42 @@ export class AgentEngine {
     );
   }
 
-  private updateNeeds(state: AgentState, _tick: number): AgentState {
+  private updateNeeds(state: AgentState, tick: number): AgentState {
     const s = { ...state };
 
+    // Tick 0 is the spawn tick: no decay applied.
+    if (tick === 0) return s;
+
     if (s.is_awake) {
-      s.need_food  = Math.max(0, s.need_food  - DECAY.food * 100);
-      s.need_water = Math.max(0, s.need_water - DECAY.water * 100);
-      s.need_rest  = Math.max(0, s.need_rest  - DECAY.rest * 100);
+      s.need_food  = Math.max(0, s.need_food  - DECAY.food);
+      s.need_water = Math.max(0, s.need_water - DECAY.water);
+      s.need_rest  = Math.max(0, s.need_rest  - DECAY.rest);
     } else {
-      // Sleeping: recover rest, still consume food/water at half rate
-      s.need_rest  = Math.min(100, s.need_rest + 0.3);
-      s.need_food  = Math.max(0, s.need_food  - DECAY.food * 50);
-      s.need_water = Math.max(0, s.need_water - DECAY.water * 50);
+      s.need_food  = Math.max(0, s.need_food  - DECAY.food  * SLEEP_DECAY_MULTIPLIER);
+      s.need_water = Math.max(0, s.need_water - DECAY.water * SLEEP_DECAY_MULTIPLIER);
+      s.need_rest  = Math.min(100, s.need_rest + SLEEP_REST_RECOVERY);
     }
 
-    // HP damage from critical needs. Earlier threshold (<10) matches the
-    // "survival crisis" urgency block — when the agent hears "you are dying",
-    // their HP should actually be draining.
+    // HP damage stacks across critical needs. Starvation and dehydration
+    // bite even while sleeping; exhaustion only damages while awake (you
+    // can't suffer exhaustion damage in the act of resting).
     let hpChange = 0;
-    if (s.need_food < 10)  hpChange -= HP_DAMAGE.starvation  * 100;
-    if (s.need_water < 10) hpChange -= HP_DAMAGE.dehydration  * 100;
-    if (s.need_rest < 10 && s.is_awake) hpChange -= HP_DAMAGE.exhaustion * 100;
+    if (s.need_food  < HP_CRITICAL_THRESHOLD)                   hpChange -= HP_DAMAGE_PER_CRITICAL_NEED;
+    if (s.need_water < HP_CRITICAL_THRESHOLD)                   hpChange -= HP_DAMAGE_PER_CRITICAL_NEED;
+    if (s.need_rest  < HP_CRITICAL_THRESHOLD && s.is_awake)     hpChange -= HP_DAMAGE_PER_CRITICAL_NEED;
 
-    // Recovery if all basic needs met
-    if (s.need_food > 30 && s.need_water > 30 && s.need_rest > 20) {
-      hpChange += HP_RECOVERY * 100;
+    // HP recovery requires ALL physical needs above the floor and HP < 100.
+    if (
+      s.need_food  > HP_RECOVERY_NEED_FLOOR &&
+      s.need_water > HP_RECOVERY_NEED_FLOOR &&
+      s.need_rest  > HP_RECOVERY_NEED_FLOOR &&
+      s.hp < 100
+    ) {
+      hpChange += HP_RECOVERY_PER_TICK;
     }
 
     s.hp = Math.min(100, Math.max(0, s.hp + hpChange));
 
-    // Update mental state
     s.mental_state = this.computeMentalState(s);
 
     return s;
@@ -1255,6 +1267,9 @@ export class AgentEngine {
       `UPDATE agents.agents SET status = 'dead', death_tick = $1 WHERE agent_id = $2`,
       [tick, agent.agent_id]
     );
+
+    // Surviving partners transition to `widowed`.
+    await this.relationshipEngine.markWidowed(agent.agent_id);
 
     const cause = state.need_food < 5 ? 'starvation'
       : state.need_water < 5 ? 'dehydration' : 'exhaustion';
