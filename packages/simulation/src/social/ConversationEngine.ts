@@ -1,8 +1,7 @@
 import { query, queryOne, execute } from '../db.js';
 import { LLMFactory } from '../llm/LLMFactory.js';
 import type { LLMClient } from '../llm/types.js';
-import { PromptBuilder } from '../llm/PromptBuilder.js';
-import { PromptBuilderOptimised } from '../llm/PromptBuilderOptimised.js';
+import { PromptBuilder, resolvePromptMode } from '../llm/PromptBuilder.js';
 import { KnowledgeEngine } from '../cultural/KnowledgeEngine.js';
 import type {
   Agent, Conversation, ConversationTurn, Relationship, RelationshipDelta
@@ -19,14 +18,12 @@ const ROMANTIC_CANDIDACY_OPENNESS_FLOOR  = 50;
 
 export class ConversationEngine {
   private llm: LLMClient;
-  private promptBuilder: PromptBuilder | PromptBuilderOptimised;
+  private promptBuilder: PromptBuilder;
   private knowledgeEngine: KnowledgeEngine;
 
   constructor() {
     this.llm = LLMFactory.fromEnv();
-    this.promptBuilder = process.env.OPTIMIZE_PROMPTS === 'true'
-      ? new PromptBuilderOptimised()
-      : new PromptBuilder();
+    this.promptBuilder = new PromptBuilder(resolvePromptMode(process.env.OPTIMIZE_PROMPTS));
     this.knowledgeEngine = new KnowledgeEngine();
   }
 

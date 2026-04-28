@@ -1,8 +1,7 @@
 import { query, queryOne, execute } from '../db.js';
 import { LLMFactory } from '../llm/LLMFactory.js';
 import type { LLMClient } from '../llm/types.js';
-import { PromptBuilder } from '../llm/PromptBuilder.js';
-import { PromptBuilderOptimised } from '../llm/PromptBuilderOptimised.js';
+import { PromptBuilder, resolvePromptMode } from '../llm/PromptBuilder.js';
 import type {
   Agent, AgentState, AgentTraits, AgentDecision,
   PerceptionContext, Relationship, AgentKnowledge, Group, GossipClaim
@@ -47,7 +46,7 @@ const HP_RECOVERY_NEED_FLOOR = 60;
 
 export class AgentEngine {
   private llm: LLMClient;
-  private promptBuilder: PromptBuilder | PromptBuilderOptimised;
+  private promptBuilder: PromptBuilder;
   private conversationEngine: ConversationEngine;
   private relationshipEngine: RelationshipEngine;
   private tradeEngine: TradeEngine;
@@ -63,9 +62,7 @@ export class AgentEngine {
     private redis: Redis
   ) {
     this.llm = LLMFactory.fromEnv();
-    this.promptBuilder = process.env.OPTIMIZE_PROMPTS === 'true'
-      ? new PromptBuilderOptimised()
-      : new PromptBuilder();
+    this.promptBuilder = new PromptBuilder(resolvePromptMode(process.env.OPTIMIZE_PROMPTS));
     this.conversationEngine = new ConversationEngine();
     this.relationshipEngine = new RelationshipEngine();
     this.tradeEngine = new TradeEngine();
