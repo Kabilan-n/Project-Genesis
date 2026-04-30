@@ -74,6 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 3 — completion summary
+- **End-of-Phase-3 unit-test count: 302 passing** across 24 files
+  (+16 from end of Phase 2).
+- New: `world/SimulationLoop.ts` with per-world Redis tick lock
+  (`SET NX EX`), TTL 30s, ticks_skipped counter labelled by reason.
+- New: `withTransaction(fn)` and `withAdvisoryLock(key, fn)` helpers
+  in `db.ts` plus `TransactionClient` interface for tx-scoped queries.
+- Trade settlement, exile, and raid resolution wrapped in transactions
+  so partial-failure paths roll back instead of leaving inconsistent
+  inventory / group / casualty state.
+- LLM calls deliberately stay outside transactions.
+
 ### Phase 2 — completion summary
 - **End-of-Phase-2 unit-test count: 286 passing** across 22 files
   (+88 from end of Phase 1).
