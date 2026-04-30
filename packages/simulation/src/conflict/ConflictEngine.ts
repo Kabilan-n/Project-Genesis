@@ -1,4 +1,4 @@
-import { query, queryOne, execute } from '../db.js';
+import { query, queryOne, execute, withTransaction, type TransactionClient } from '../db.js';
 import type { War, Skirmish, Treaty, Agent, WorldEvent } from '../types.js';
 
 // ── Combat constants ─────────────────────────────────────────────────────────
@@ -82,73 +82,75 @@ export class ConflictEngine {
   ): Promise<Skirmish> {
     const skirmish = this.resolveSkirmish(attacker, defender);
 
-    // Apply HP damage
-    await execute(
-      `UPDATE agents.agent_state SET hp = GREATEST(0, hp - $2) WHERE agent_id = $1`,
-      [attacker.agent_id, skirmish.hp_damage_attacker]
-    );
-    await execute(
-      `UPDATE agents.agent_state SET hp = GREATEST(0, hp - $2) WHERE agent_id = $1`,
-      [defender.agent_id, skirmish.hp_damage_defender]
-    );
-
-    // Loot resources on attacker win
-    if (skirmish.outcome === 'attacker_won') {
-      skirmish.resources_stolen = await this.lootResources(
-        attacker.agent_id,
-        defender.agent_id
+    // HP damage + loot + skirmish record + war casualty counters all
+    // settle in one transaction. If any query fails, no half-recorded
+    // raid where HP dropped but the skirmish row is missing.
+    const saved = await withTransaction(async (tx) => {
+      await tx.execute(
+        `UPDATE agents.agent_state SET hp = GREATEST(0, hp - $2) WHERE agent_id = $1`,
+        [attacker.agent_id, skirmish.hp_damage_attacker],
       );
-    }
+      await tx.execute(
+        `UPDATE agents.agent_state SET hp = GREATEST(0, hp - $2) WHERE agent_id = $1`,
+        [defender.agent_id, skirmish.hp_damage_defender],
+      );
 
-    // Persist skirmish record
-    const saved = await queryOne<Skirmish>(
-      `INSERT INTO conflict.skirmishes
-         (world_id, war_id, attacker_id, defender_id,
-          attacker_group_id, defender_group_id,
-          location_x, location_y, tick, day,
-          outcome, hp_damage_attacker, hp_damage_defender,
-          attacker_power, defender_power, resources_stolen)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-       RETURNING *`,
-      [
-        worldId,
-        warId ?? null,
-        attacker.agent_id,
-        defender.agent_id,
-        attacker.group_id ?? null,
-        defender.group_id ?? null,
-        attacker.state.position_x,
-        attacker.state.position_y,
-        tick,
-        day,
-        skirmish.outcome,
-        skirmish.hp_damage_attacker,
-        skirmish.hp_damage_defender,
-        skirmish.attacker_power,
-        skirmish.defender_power,
-        JSON.stringify(skirmish.resources_stolen),
-      ]
-    );
-
-    // Update war casualty counters
-    if (warId) {
-      if (attacker.group_id) {
-        await execute(
-          `UPDATE conflict.wars
-           SET casualties_aggressor = casualties_aggressor + $2
-           WHERE war_id = $1`,
-          [warId, skirmish.hp_damage_attacker > 0 ? 1 : 0]
+      if (skirmish.outcome === 'attacker_won') {
+        skirmish.resources_stolen = await this.lootResourcesTx(
+          tx, attacker.agent_id, defender.agent_id,
         );
       }
-      if (defender.group_id) {
-        await execute(
-          `UPDATE conflict.wars
-           SET casualties_defender = casualties_defender + $2
-           WHERE war_id = $1`,
-          [warId, skirmish.hp_damage_defender > 0 ? 1 : 0]
-        );
+
+      const row = await tx.queryOne<Skirmish>(
+        `INSERT INTO conflict.skirmishes
+           (world_id, war_id, attacker_id, defender_id,
+            attacker_group_id, defender_group_id,
+            location_x, location_y, tick, day,
+            outcome, hp_damage_attacker, hp_damage_defender,
+            attacker_power, defender_power, resources_stolen)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         RETURNING *`,
+        [
+          worldId,
+          warId ?? null,
+          attacker.agent_id,
+          defender.agent_id,
+          attacker.group_id ?? null,
+          defender.group_id ?? null,
+          attacker.state.position_x,
+          attacker.state.position_y,
+          tick,
+          day,
+          skirmish.outcome,
+          skirmish.hp_damage_attacker,
+          skirmish.hp_damage_defender,
+          skirmish.attacker_power,
+          skirmish.defender_power,
+          JSON.stringify(skirmish.resources_stolen),
+        ],
+      );
+
+      if (warId) {
+        if (attacker.group_id) {
+          await tx.execute(
+            `UPDATE conflict.wars
+             SET casualties_aggressor = casualties_aggressor + $2
+             WHERE war_id = $1`,
+            [warId, skirmish.hp_damage_attacker > 0 ? 1 : 0],
+          );
+        }
+        if (defender.group_id) {
+          await tx.execute(
+            `UPDATE conflict.wars
+             SET casualties_defender = casualties_defender + $2
+             WHERE war_id = $1`,
+            [warId, skirmish.hp_damage_defender > 0 ? 1 : 0],
+          );
+        }
       }
-    }
+
+      return row;
+    });
 
     return saved ?? {
       ...skirmish,
@@ -205,7 +207,38 @@ export class ConflictEngine {
     return (aggression * 0.4) + (hp * 0.3) + (combatSkill * 0.3);
   }
 
-  /** Move RAID_RESOURCE_PCT of defender's inventory to attacker */
+  /** Transactional variant of lootResources used inside executeRaid. */
+  private async lootResourcesTx(
+    tx: TransactionClient,
+    attackerId: string,
+    defenderId: string,
+  ): Promise<Record<string, number>> {
+    const rows = await tx.query<{ resource_type: string; amount: number }>(
+      `SELECT resource_type, amount FROM economy.inventory WHERE agent_id = $1`,
+      [defenderId],
+    );
+    const looted: Record<string, number> = {};
+    for (const row of rows) {
+      const take = Math.floor(row.amount * RAID_RESOURCE_PCT);
+      if (take <= 0) continue;
+      looted[row.resource_type] = take;
+      await tx.execute(
+        `UPDATE economy.inventory SET amount = amount - $2
+         WHERE agent_id = $1 AND resource_type = $3`,
+        [defenderId, take, row.resource_type],
+      );
+      await tx.execute(
+        `INSERT INTO economy.inventory (agent_id, resource_type, amount)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (agent_id, resource_type)
+         DO UPDATE SET amount = economy.inventory.amount + EXCLUDED.amount`,
+        [attackerId, row.resource_type, take],
+      );
+    }
+    return looted;
+  }
+
+  /** Non-transactional variant — kept for callers outside executeRaid. */
   private async lootResources(
     attackerId: string,
     defenderId: string
