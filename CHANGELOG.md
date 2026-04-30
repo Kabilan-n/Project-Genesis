@@ -74,6 +74,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 2 — completion summary
+- **End-of-Phase-2 unit-test count: 286 passing** across 22 files
+  (+88 from end of Phase 1).
+- New: `__tests__/CONVENTIONS.md` documenting the testing pattern.
+- New: coverage thresholds in `vitest.config.ts` (lines/functions/statements
+  70, branches 60). Affect `npm run test:coverage` only — Phase 8 wires CI.
+- New: dedicated test file for each of the 12 phase-3+ engines that
+  previously had zero tests (GossipEngine, GroupEngine, KnowledgeEngine,
+  BeliefEngine, ConflictEngine, GovernanceEngine, LawEngine, EconomyEngine,
+  ConstructionEngine, TechnologyEngine, ChronicleEngine, ObserverEngine).
+- Tests are smoke level — pure helpers, early-exit guards, classification
+  tables. Heavy multi-step DB orchestrations are deferred to the
+  integration suite.
+- Task 2.14 (Testcontainers integration) deferred — Docker unavailable.
+  Directory + README scaffolded; gap logged in `FOLLOWUPS.md`.
+
 ### Baseline
 - Pre-stabilization unit-test count: **156 passing** across 8 files in ~1.39s
   on `dev` at commit `3900abe7` (vitest 4.1.4, Node on Windows 11).
