@@ -39,6 +39,22 @@ resolved it; do not delete the entry.
   daemon was not running at baseline-capture time, so `migrate && seed` and
   `npm run dev` boot-against-clean-DB checks were not executed. Re-run when
   Docker is available; the unit-test baseline (156 passing) is captured.
+- **Phase 2 / Task 2.14 — Testcontainers integration suite deferred.** Docker
+  was unavailable during Phase 2, so the planned `agent-lifecycle`,
+  `conversation-flow`, `reproduction`, `migration-idempotency`, and
+  `world-isolation` integration tests are not yet written. The directory
+  `packages/simulation/src/__tests__/integration/` exists with a README
+  describing what to build; the `@testcontainers/postgresql` and
+  `@testcontainers/redis` dev deps are NOT installed yet. Pick this up
+  before Phase 9's 24-hour soak test.
+- **Phase 2 — engine tests are smoke level, not coverage-target level.** The
+  per-engine test files added under task 2.2–2.13 cover early-exit guards,
+  pure helpers, and decision math for each of the 12 phase-3+ engines. Heavy
+  DB orchestration paths (multi-step trade settlement, full conversion flow,
+  full conflict resolution) are intentionally left to the integration suite
+  above. Coverage thresholds in `vitest.config.ts` may need to be lowered
+  if `npm run test:coverage` reports below 70 lines until the integration
+  tests land.
 - **Phase 1 / Task 1.4 — non-Anthropic providers still use regex fallback.**
   `OpenAIClient`, `OllamaClient`, `HuggingFaceClient`, and the deprecated
   `ClaudeClient.ts` all extract JSON-from-prose with `text.match(/\{[\s\S]*\}/)`
