@@ -17,6 +17,9 @@
  */
 import CircuitBreaker from 'opossum';
 import { metrics } from '../observability/metrics.js';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('breaker');
 
 export const BREAKER_OPTIONS: CircuitBreaker.Options = {
   timeout: 15_000,                // 15s per request
@@ -37,13 +40,13 @@ export function attachBreakerEvents<TArgs extends unknown[], TResult>(
 ): void {
   breaker.on('open', () => {
     metrics.llmCircuitOpens.inc({ provider: events.label });
-    console.error('[breaker] llm_circuit_opened', { provider: events.label });
+    log.error({ provider: events.label }, 'llm_circuit_opened');
   });
   breaker.on('halfOpen', () => {
-    console.warn('[breaker] llm_circuit_halfopen', { provider: events.label });
+    log.warn({ provider: events.label }, 'llm_circuit_halfopen');
   });
   breaker.on('close', () => {
-    console.info('[breaker] llm_circuit_closed', { provider: events.label });
+    log.info({ provider: events.label }, 'llm_circuit_closed');
   });
   breaker.on('reject', () => {
     metrics.llmCircuitRejected.inc({ provider: events.label });

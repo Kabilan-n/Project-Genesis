@@ -7,6 +7,7 @@ import { MemoryDecay } from './social/MemoryDecay.js';
 import { LLMFactory } from './llm/LLMFactory.js';
 import { execute as dbExecute, query as dbQuery } from './db.js';
 import { runTickWithLock } from './world/SimulationLoop.js';
+import { engineLogger } from './observability/logger.js';
 import { GroupEngine } from './cultural/GroupEngine.js';
 // Phase 5 — Conflict & Governance
 import { ConflictEngine } from './conflict/ConflictEngine.js';
@@ -25,15 +26,15 @@ import { getPool } from './db.js';
 
 const TICK_INTERVAL = parseInt(process.env.SIMULATION_TICK_INTERVAL_MS ?? '5000');
 const WORLD_ID = process.env.WORLD_ID ?? '';
+const log = engineLogger('Simulation');
 
 async function main() {
   if (!WORLD_ID) {
-    console.error('[Simulation] WORLD_ID env var is required');
+    log.fatal('worldId_env_missing');
     process.exit(1);
   }
 
-  console.log(`[Simulation] Starting for world ${WORLD_ID}`);
-  console.log(`[Simulation] Tick interval: ${TICK_INTERVAL}ms`);
+  log.info({ worldId: WORLD_ID, tickIntervalMs: TICK_INTERVAL }, 'simulation_starting');
 
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
@@ -43,11 +44,7 @@ async function main() {
   const memoryDecay      = new MemoryDecay({
     db:  { execute: dbExecute, query: dbQuery },
     llm: LLMFactory.fromEnv(),
-    logger: {
-      info:  (obj, msg) => console.log('[MemoryDecay]',  msg ?? '', obj),
-      warn:  (obj, msg) => console.warn('[MemoryDecay]', msg ?? '', obj),
-      error: (obj, msg) => console.error('[MemoryDecay]', msg ?? '', obj),
-    },
+    logger: engineLogger('MemoryDecay'),
   });
   const groupEngine      = new GroupEngine();
   const conflictEngine   = new ConflictEngine();
@@ -72,7 +69,7 @@ async function main() {
     const startupDay  = Math.floor(startupTick / 1440);
     await memoryDecay.resumePendingConsolidations(WORLD_ID, startupDay);
   } catch (err) {
-    console.error('[Simulation] resumePendingConsolidations failed:', err);
+    log.error({ err: String(err) }, 'resume_pending_consolidations_failed');
   }
 
   while (running) {
@@ -109,7 +106,7 @@ async function main() {
         try {
           await agentEngine.runAgentTick(agentId, tick, day);
         } catch (err) {
-          console.error(`[Simulation] Error running agent ${agentId}:`, err);
+          log.error({ err: String(err), agentId, tick, day }, 'agent_tick_error');
         }
       }
 
@@ -117,42 +114,42 @@ async function main() {
       try {
         await memoryDecay.runDecayPass(WORLD_ID, tick);
       } catch (err) {
-        console.error('[Simulation] Memory decay error:', err);
+        log.error({ err: String(err) }, 'memory_decay_error');
       }
 
       // ── Phase 3: Group belonging bonus + daily cohesion check ────────────
       try {
         await groupEngine.runGroupTick(WORLD_ID, tick);
       } catch (err) {
-        console.error('[Simulation] Group tick error:', err);
+        log.error({ err: String(err) }, 'group_tick_error');
       }
 
       // ── Phase 5: Conflict — war termination + treaty ratification ────────
       try {
         await conflictEngine.checkWarTermination(WORLD_ID, tick);
       } catch (err) {
-        console.error('[Simulation] Conflict tick error:', err);
+        log.error({ err: String(err) }, 'conflict_tick_error');
       }
 
       // ── Phase 5: Law — enact proposed laws ───────────────────────────────
       try {
         await lawEngine.runLawTick(WORLD_ID, tick);
       } catch (err) {
-        console.error('[Simulation] Law tick error:', err);
+        log.error({ err: String(err) }, 'law_tick_error');
       }
 
       // ── Phase 6: Belief — passive conviction decay + on_war rituals ──────
       try {
         await beliefEngine.runBeliefTick(WORLD_ID, tick);
       } catch (err) {
-        console.error('[Simulation] Belief tick error:', err);
+        log.error({ err: String(err) }, 'belief_tick_error');
       }
 
       // ── Phase 6: Observer — stats, snapshots, weather, interventions ──────
       try {
         await observerEngine.runObserverTick(WORLD_ID, tick, day);
       } catch (err) {
-        console.error('[Simulation] Observer tick error:', err);
+        log.error({ err: String(err) }, 'observer_tick_error');
       }
 
       // ── Daily passes (once per in-game day) ──────────────────────────────
@@ -161,14 +158,14 @@ async function main() {
         try {
           await economyEngine.runMarketTick(WORLD_ID, tick, day);
         } catch (err) {
-          console.error('[Simulation] Economy tick error:', err);
+          log.error({ err: String(err) }, 'economy_tick_error');
         }
 
         // Belief extinction check
         try {
           await beliefEngine.checkBeliefExtinction(WORLD_ID);
         } catch (err) {
-          console.error('[Simulation] Belief extinction error:', err);
+          log.error({ err: String(err) }, 'belief_extinction_error');
         }
 
         // Chronicle: check if a new era has completed
@@ -177,7 +174,11 @@ async function main() {
           if (shouldChronicle) {
             const chronicle = await chronicleEngine.generateChronicle(WORLD_ID, day, tick);
             if (chronicle) {
-              console.log(`[Simulation] Chronicle generated: "${chronicle.era_name}" (Days ${chronicle.era_start_day}–${chronicle.era_end_day})`);
+              log.info({
+                eraName: chronicle.era_name,
+                eraStartDay: chronicle.era_start_day,
+                eraEndDay: chronicle.era_end_day,
+              }, 'chronicle_generated');
               await redis.publish('genesis:events', JSON.stringify({
                 type: 'culture:chronicle',
                 chronicle_id: chronicle.chronicle_id,
@@ -189,12 +190,12 @@ async function main() {
             }
           }
         } catch (err) {
-          console.error('[Simulation] Chronicle error:', err);
+          log.error({ err: String(err) }, 'chronicle_error');
         }
       }
 
       const elapsed = Date.now() - start;
-      console.log(`[Simulation] Tick ${tick} (Day ${day}) — ${agentIds.length} agents — ${elapsed}ms`);
+      log.debug({ tick, day, agentCount: agentIds.length, elapsedMs: elapsed }, 'tick_complete');
       });
 
       // If the lock was held, runTickWithLock returned without executing.
@@ -210,12 +211,12 @@ async function main() {
         await sleep(remaining);
       }
     } catch (err) {
-      console.error('[Simulation] Tick error:', err);
+      log.error({ err: String(err) }, 'tick_error');
       await sleep(TICK_INTERVAL);
     }
   }
 
-  console.log('[Simulation] Shutting down...');
+  log.info('simulation_shutdown');
   await redis.quit();
   await getPool().end();
 }
@@ -235,6 +236,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 main().catch(err => {
-  console.error('[Simulation] Fatal error:', err);
+  // The in-main `log` is not in scope here; use a fresh child.
+  engineLogger('Simulation').fatal({ err: String(err) }, 'fatal_error');
   process.exit(1);
 });

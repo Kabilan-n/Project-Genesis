@@ -20,6 +20,9 @@
  */
 import type { Redis } from 'ioredis';
 import { metrics } from '../observability/metrics.js';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('SimulationLoop');
 
 export const LOCK_TTL_SECONDS = 30;
 
@@ -59,13 +62,13 @@ export async function runTickWithLock(
   } catch (err) {
     // Redis is unreachable — do NOT run unlocked.
     metrics.ticksSkipped.inc({ reason: 'redis_error', worldId });
-    console.error('[SimulationLoop] tick_lock_redis_error', err);
+    log.error({ err: String(err), worldId }, 'tick_lock_redis_error');
     return { executed: false, durationMs: Date.now() - start };
   }
 
   if (!acquired) {
     metrics.ticksSkipped.inc({ reason: 'lock_held', worldId });
-    console.warn('[SimulationLoop] tick_skipped_lock_held', { worldId });
+    log.warn({ worldId }, 'tick_skipped_lock_held');
     return { executed: false, durationMs: Date.now() - start };
   }
 
@@ -76,7 +79,7 @@ export async function runTickWithLock(
     try {
       await releaseTickLock(redis, worldId);
     } catch (err) {
-      console.error('[SimulationLoop] tick_lock_release_error', err);
+      log.error({ err: String(err), worldId }, 'tick_lock_release_error');
     }
   }
 }

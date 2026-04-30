@@ -66,3 +66,14 @@ resolved it; do not delete the entry.
 - **Phase 1 / Task 1.4 — `ADDING_PROVIDERS.md` shows the regex pattern.**
   The provider-authoring guide demonstrates the now-deprecated parser style.
   Update when other providers are migrated to Zod.
+- **Phase 4 / Task 4.1 — non-Anthropic providers do not yet have a circuit
+  breaker.** Same deferral pattern as Phase 1.4's Zod migration: only
+  `AnthropicClient` was wrapped this round. Apply `BREAKER_OPTIONS` +
+  `attachBreakerEvents` to `OpenAIClient`, `OllamaClient`,
+  `HuggingFaceClient` when they next get touched.
+- **Phase 4 / Task 4.2 — `console.*` sweep is incomplete.** Pino logger
+  lives at `observability/logger.ts` and `index.ts` / `breaker.ts` /
+  `SimulationLoop.ts` are migrated. The 12 phase-3+ engine files plus the
+  AgentEngine still emit `console.*` directly. Acceptance criterion was
+  "grep -r 'console\\.' returns nothing" — replace per-engine in a follow-up
+  pass; pattern is `const log = engineLogger('EngineName')` at module top.
