@@ -71,9 +71,14 @@ resolved it; do not delete the entry.
   `AnthropicClient` was wrapped this round. Apply `BREAKER_OPTIONS` +
   `attachBreakerEvents` to `OpenAIClient`, `OllamaClient`,
   `HuggingFaceClient` when they next get touched.
-- **Phase 4 / Task 4.2 — `console.*` sweep is incomplete.** Pino logger
-  lives at `observability/logger.ts` and `index.ts` / `breaker.ts` /
-  `SimulationLoop.ts` are migrated. The 12 phase-3+ engine files plus the
-  AgentEngine still emit `console.*` directly. Acceptance criterion was
-  "grep -r 'console\\.' returns nothing" — replace per-engine in a follow-up
-  pass; pattern is `const log = engineLogger('EngineName')` at module top.
+- **Phase 4 / Task 4.2 — `console.*` sweep is mostly complete; three files
+  intentionally remain.** Migrated: `index.ts`, `breaker.ts`,
+  `SimulationLoop.ts`, `AgentEngine`, `db.ts`, `MemoryDecay`,
+  `ChronicleEngine`, `ConstructionEngine`, `ObserverEngine`,
+  `PromptBuilder`, `AnthropicClient`. Skipped:
+    - `seed.ts` — one-shot user-facing CLI script; the console output is
+      the operator's UX. Migrate when Phase 8 / Task 8.4 reworks
+      `WORLD_ID` autoconfig (operator flow changes anyway).
+    - `OpenAIClient` / `OllamaClient` / `HuggingFaceClient` — tied to the
+      Phase 4.1 follow-up that wraps these providers in circuit breakers.
+    - `ClaudeClient.ts` — deprecated; deleted by Phase 7 / Task 7.1.

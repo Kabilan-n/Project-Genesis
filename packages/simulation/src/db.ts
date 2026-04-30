@@ -1,4 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
+import { engineLogger } from './observability/logger.js';
+
+const log = engineLogger('db');
 
 let pool: Pool | null = null;
 
@@ -79,7 +82,7 @@ export async function withTransaction<T>(
     try {
       await client.query('ROLLBACK');
     } catch (rollbackErr) {
-      console.error('[db] rollback failed after error:', rollbackErr);
+      log.error({ err: String(rollbackErr) }, 'rollback_failed');
     }
     throw err;
   } finally {
@@ -107,7 +110,7 @@ export async function withAdvisoryLock<T>(
     try {
       await client.query('SELECT pg_advisory_unlock($1)', [lockKey.toString()]);
     } catch (err) {
-      console.error('[db] advisory unlock failed:', err);
+      log.error({ err: String(err) }, 'advisory_unlock_failed');
     }
     client.release();
   }

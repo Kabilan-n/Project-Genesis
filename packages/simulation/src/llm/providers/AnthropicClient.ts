@@ -11,6 +11,9 @@ import {
 } from '../defaults.js';
 import { metrics } from '../../observability/metrics.js';
 import { BREAKER_OPTIONS, attachBreakerEvents } from '../breaker.js';
+import { engineLogger } from '../../observability/logger.js';
+
+const log = engineLogger('AnthropicClient');
 
 type CompletionFn = (args: { prompt: string; maxTokens: number }) => Promise<string>;
 
@@ -103,10 +106,11 @@ export class AnthropicClient implements LLMClient {
       return DecisionSchema.parse(parsed) as AgentDecision;
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'decision' });
-      console.warn('[AnthropicClient] parseDecision failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseDecision',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_DECISION;
     }
   }
@@ -118,10 +122,11 @@ export class AnthropicClient implements LLMClient {
       return ConversationTurnSchema.parse(parsed);
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'conversation' });
-      console.warn('[AnthropicClient] parseConversationTurn failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseConversationTurn',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_CONVERSATION_TURN;
     }
   }
@@ -133,10 +138,11 @@ export class AnthropicClient implements LLMClient {
       return TradeResponseSchema.parse(parsed) as TradeResponse;
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'trade' });
-      console.warn('[AnthropicClient] parseTradeResponse failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseTradeResponse',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_TRADE_RESPONSE;
     }
   }

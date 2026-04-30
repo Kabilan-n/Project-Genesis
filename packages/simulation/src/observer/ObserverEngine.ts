@@ -1,5 +1,8 @@
 import { query, queryOne, execute } from '../db.js';
 import Anthropic from '@anthropic-ai/sdk';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('ObserverEngine');
 
 const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5-20251001';
 
@@ -447,7 +450,9 @@ Write 2-3 paragraphs as if you are a historian describing their life. Focus on t
           [intervention.intervention_id]
         );
       } catch (err) {
-        console.error(`[ObserverEngine] Failed to apply intervention ${intervention.intervention_id}:`, err);
+        log.error({
+          err: String(err), interventionId: intervention.intervention_id,
+        }, 'intervention_failed');
       }
     }
   }
