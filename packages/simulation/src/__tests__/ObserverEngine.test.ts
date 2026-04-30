@@ -15,8 +15,8 @@ describe('ObserverEngine.triggerWeather — severity scaling', () => {
   it('drought at severity 1 produces resource_mult ≈ 0.3', async () => {
     let captured: any[] | undefined;
     const queryOneSpy = vi.spyOn(await import('../db.js'), 'queryOne')
-      .mockImplementation(async (_sql: string, params: any[]) => {
-        captured = params;
+      .mockImplementation(async (_sql: string, params?: unknown[]) => {
+        captured = params as any[] | undefined;
         return { weather_id: 'w-1' } as any;
       });
     const executeSpy = vi.spyOn(await import('../db.js'), 'execute')
@@ -33,8 +33,8 @@ describe('ObserverEngine.triggerWeather — severity scaling', () => {
   it('abundance at severity 0.5 produces a multiplier between 1.0 and 2.0', async () => {
     let captured: any[] | undefined;
     const queryOneSpy = vi.spyOn(await import('../db.js'), 'queryOne')
-      .mockImplementation(async (_sql: string, params: any[]) => {
-        captured = params;
+      .mockImplementation(async (_sql: string, params?: unknown[]) => {
+        captured = params as any[] | undefined;
         return { weather_id: 'w-2' } as any;
       });
     const executeSpy = vi.spyOn(await import('../db.js'), 'execute')
@@ -51,8 +51,8 @@ describe('ObserverEngine.triggerWeather — severity scaling', () => {
   it('storm at severity 0 has no effect (drain rate 0, mult 1)', async () => {
     let captured: any[] | undefined;
     const queryOneSpy = vi.spyOn(await import('../db.js'), 'queryOne')
-      .mockImplementation(async (_sql: string, params: any[]) => {
-        captured = params;
+      .mockImplementation(async (_sql: string, params?: unknown[]) => {
+        captured = params as any[] | undefined;
         return { weather_id: 'w-3' } as any;
       });
     const executeSpy = vi.spyOn(await import('../db.js'), 'execute')
@@ -69,8 +69,8 @@ describe('ObserverEngine.triggerWeather — severity scaling', () => {
   it('blight at severity 1 has the lowest resource_mult of the damaging weathers', async () => {
     let captured: any[] | undefined;
     const queryOneSpy = vi.spyOn(await import('../db.js'), 'queryOne')
-      .mockImplementation(async (_sql: string, params: any[]) => {
-        captured = params;
+      .mockImplementation(async (_sql: string, params?: unknown[]) => {
+        captured = params as any[] | undefined;
         return { weather_id: 'w-4' } as any;
       });
     const executeSpy = vi.spyOn(await import('../db.js'), 'execute')

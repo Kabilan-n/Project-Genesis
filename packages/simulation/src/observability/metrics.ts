@@ -41,6 +41,7 @@ function serialize(labels: Labels): string {
 export const metrics = {
   llmParseFailures: new Counter('llm_parse_failures'),
   llmCallErrors:    new Counter('llm_call_errors'),
+  ticksSkipped:     new Counter('ticks_skipped'),
 };
 
 export type MetricsRegistry = typeof metrics;
