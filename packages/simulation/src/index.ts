@@ -6,6 +6,7 @@ import { AgentEngine } from './agent/AgentEngine.js';
 import { MemoryDecay } from './social/MemoryDecay.js';
 import { LLMFactory } from './llm/LLMFactory.js';
 import { execute as dbExecute, query as dbQuery } from './db.js';
+import { runTickWithLock } from './world/SimulationLoop.js';
 import { GroupEngine } from './cultural/GroupEngine.js';
 // Phase 5 — Conflict & Governance
 import { ConflictEngine } from './conflict/ConflictEngine.js';
@@ -78,6 +79,10 @@ async function main() {
     const start = Date.now();
 
     try {
+      // Per-world tick lock guards against a second simulation process
+      // ticking the same world. If the lock is held we skip this iteration
+      // and try again at the next interval.
+      const tickResult = await runTickWithLock(redis, WORLD_ID, async () => {
       // ── Advance world tick ───────────────────────────────────────────────
       const tick = await worldEngine.advanceTick();
       const day  = Math.floor(tick / 1440);
@@ -190,8 +195,17 @@ async function main() {
 
       const elapsed = Date.now() - start;
       console.log(`[Simulation] Tick ${tick} (Day ${day}) — ${agentIds.length} agents — ${elapsed}ms`);
+      });
 
-      const remaining = TICK_INTERVAL - elapsed;
+      // If the lock was held, runTickWithLock returned without executing.
+      // Either way, sleep until the next interval.
+      const elapsedTotal = Date.now() - start;
+      if (!tickResult.executed) {
+        // Avoid hammering Redis if the lock is persistently held.
+        await sleep(Math.max(TICK_INTERVAL, 1000));
+        continue;
+      }
+      const remaining = TICK_INTERVAL - elapsedTotal;
       if (remaining > 0) {
         await sleep(remaining);
       }

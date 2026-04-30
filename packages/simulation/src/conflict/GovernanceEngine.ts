@@ -1,4 +1,4 @@
-import { query, queryOne, execute } from '../db.js';
+import { query, queryOne, execute, withTransaction } from '../db.js';
 import type { Agent, LeadershipEvent, Group } from '../types.js';
 
 /**
@@ -148,28 +148,33 @@ export class GovernanceEngine {
     groupId: string,
     worldId: string
   ): Promise<boolean> {
-    // Verify leader is actually the group leader
+    // Verify leader is actually the group leader (read outside the
+    // transaction — it's just a guard, no data hazard).
     const group = await queryOne<{ leader_id: string }>(
       `SELECT leader_id FROM social.groups WHERE group_id = $1`,
       [groupId]
     );
     if (!group || group.leader_id !== leaderId) return false;
 
-    // Remove from group
-    await execute(
-      `DELETE FROM social.group_members WHERE group_id = $1 AND agent_id = $2`,
-      [groupId, targetAgentId]
-    );
-    await execute(
-      `UPDATE agents.agents
-       SET group_id = NULL, is_exiled = TRUE, exiled_from = $2
-       WHERE agent_id = $1`,
-      [targetAgentId, groupId]
-    );
-    await execute(
-      `UPDATE social.groups SET member_count = GREATEST(0, member_count - 1) WHERE group_id = $1`,
-      [groupId]
-    );
+    // Three-table mutation: group_members delete, agent state flip,
+    // group member_count decrement. Any partial failure leaves the
+    // exiled flag and group_id out of sync.
+    await withTransaction(async (tx) => {
+      await tx.execute(
+        `DELETE FROM social.group_members WHERE group_id = $1 AND agent_id = $2`,
+        [groupId, targetAgentId],
+      );
+      await tx.execute(
+        `UPDATE agents.agents
+         SET group_id = NULL, is_exiled = TRUE, exiled_from = $2
+         WHERE agent_id = $1`,
+        [targetAgentId, groupId],
+      );
+      await tx.execute(
+        `UPDATE social.groups SET member_count = GREATEST(0, member_count - 1) WHERE group_id = $1`,
+        [groupId],
+      );
+    });
 
     return true;
   }

@@ -9,6 +9,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TradeEngine } from '../social/TradeEngine.js';
 import { makeAgent, makeAgentB, makeTradeOffer, AGENT_ID_A, AGENT_ID_B, WORLD_ID } from './fixtures.js';
 
+// Bypass the real Postgres pool: trade settlement routes through
+// withTransaction, which would otherwise try to connect.
+vi.mock('../db.js', async (orig) => {
+  const actual = await orig<typeof import('../db.js')>();
+  return {
+    ...actual,
+    withTransaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue(undefined),
+        query: vi.fn().mockResolvedValue([]),
+        queryOne: vi.fn().mockResolvedValue(null),
+      };
+      return fn(tx);
+    },
+    execute: vi.fn().mockResolvedValue(undefined),
+    query: vi.fn().mockResolvedValue([]),
+    queryOne: vi.fn().mockResolvedValue(null),
+  };
+});
+
 // ─── Expose private helpers ─────────────────────────────────────────────────
 
 class TestableTradeEngine extends TradeEngine {
@@ -91,7 +111,7 @@ describe('TradeEngine.executeTrade — mocked DB and Claude', () => {
       getTradeResponse: vi.fn().mockResolvedValue({ decision: 'accept', thought: 'Good deal', reason: 'I need food' }),
     };
     (engine as any).promptBuilder = { buildTradeDecisionPrompt: vi.fn().mockReturnValue('prompt') };
-    (engine as any).transferItems = vi.fn().mockResolvedValue(undefined);
+    (engine as any).transferItemsTx = vi.fn().mockResolvedValue(undefined);
     (engine as any).persist = vi.fn().mockImplementation((t: any) => Promise.resolve({ ...t, trade_id: 'mock-id' }));
     (engine as any).relEngine = { applyTradeChanges: vi.fn().mockResolvedValue(undefined) };
 
@@ -100,7 +120,7 @@ describe('TradeEngine.executeTrade — mocked DB and Claude', () => {
     );
 
     expect(trade.status).toBe('accepted');
-    expect((engine as any).transferItems).toHaveBeenCalledTimes(2); // both directions
+    expect((engine as any).transferItemsTx).toHaveBeenCalledTimes(2); // both directions
   });
 
   it('returns rejected trade when Claude says reject', async () => {
@@ -142,7 +162,7 @@ describe('TradeEngine.executeTrade — mocked DB and Claude', () => {
       }),
     };
     (engine as any).promptBuilder = { buildTradeDecisionPrompt: vi.fn().mockReturnValue('prompt') };
-    (engine as any).transferItems = vi.fn().mockResolvedValue(undefined);
+    (engine as any).transferItemsTx = vi.fn().mockResolvedValue(undefined);
     (engine as any).persist = vi.fn().mockImplementation((t: any) => Promise.resolve({ ...t, trade_id: 'mock-id' }));
     (engine as any).relEngine = { applyTradeChanges: vi.fn().mockResolvedValue(undefined) };
 

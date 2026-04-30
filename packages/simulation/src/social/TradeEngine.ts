@@ -1,4 +1,4 @@
-import { query, queryOne, execute } from '../db.js';
+import { query, queryOne, execute, withTransaction, type TransactionClient } from '../db.js';
 import { LLMFactory } from '../llm/LLMFactory.js';
 import type { LLMClient } from '../llm/types.js';
 import { PromptBuilder, resolvePromptMode } from '../llm/PromptBuilder.js';
@@ -76,10 +76,18 @@ export class TradeEngine {
         trade.status = 'rejected';
         trade.outcome_reason = 'Receiver lacks requested items';
       } else {
-        await this.transferItems(offerer.agent_id, receiver.agent_id, offer.offered_items);
-        await this.transferItems(receiver.agent_id, offerer.agent_id, offer.requested_items);
-        trade.status = 'accepted';
-        trade.outcome_reason = response.reason;
+        // Both transfers + persistence land in a single transaction. If
+        // any one query fails (DB error, integrity violation), the whole
+        // settlement rolls back — no half-traded state.
+        trade = await withTransaction(async (tx) => {
+          await this.transferItemsTx(tx, offerer.agent_id, receiver.agent_id, offer.offered_items);
+          await this.transferItemsTx(tx, receiver.agent_id, offerer.agent_id, offer.requested_items);
+          return {
+            ...trade,
+            status: 'accepted' as const,
+            outcome_reason: response.reason,
+          };
+        });
       }
     } else if (response.decision === 'counter' && response.counter_offer) {
       trade.status = 'countered';
@@ -91,10 +99,16 @@ export class TradeEngine {
       if (counterValid) {
         const offererHasRequested = await this.validateInventory(receiver.agent_id, response.counter_offer.requested_items);
         if (offererHasRequested) {
-          await this.transferItems(receiver.agent_id, offerer.agent_id, response.counter_offer.offered_items);
-          await this.transferItems(offerer.agent_id, receiver.agent_id, response.counter_offer.requested_items);
-          trade.status = 'accepted';
-          trade.outcome_reason = `Counter accepted: ${response.reason}`;
+          const co = response.counter_offer;
+          trade = await withTransaction(async (tx) => {
+            await this.transferItemsTx(tx, receiver.agent_id, offerer.agent_id, co.offered_items);
+            await this.transferItemsTx(tx, offerer.agent_id, receiver.agent_id, co.requested_items);
+            return {
+              ...trade,
+              status: 'accepted' as const,
+              outcome_reason: `Counter accepted: ${response.reason}`,
+            };
+          });
         }
       }
     } else {
@@ -124,27 +138,27 @@ export class TradeEngine {
     return true;
   }
 
-  private async transferItems(
+  /** Transactional variant — used by executeTrade so deduct+add are atomic. */
+  private async transferItemsTx(
+    tx: TransactionClient,
     fromAgentId: string,
     toAgentId: string,
-    items: Record<string, number>
+    items: Record<string, number>,
   ): Promise<void> {
     for (const [resourceType, amount] of Object.entries(items)) {
       if (amount <= 0) continue;
-      // Deduct from sender
-      await execute(
+      await tx.execute(
         `UPDATE economy.inventory
          SET amount = amount - $1
          WHERE agent_id = $2 AND resource_type = $3`,
-        [amount, fromAgentId, resourceType]
+        [amount, fromAgentId, resourceType],
       );
-      // Add to receiver
-      await execute(
+      await tx.execute(
         `INSERT INTO economy.inventory (agent_id, resource_type, amount, acquired_method)
          VALUES ($1, $2, $3, 'traded')
          ON CONFLICT (agent_id, resource_type)
          DO UPDATE SET amount = economy.inventory.amount + $3`,
-        [toAgentId, resourceType, amount]
+        [toAgentId, resourceType, amount],
       );
     }
   }
