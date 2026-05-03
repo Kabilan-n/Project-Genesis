@@ -16,7 +16,14 @@ import { settingsRoutes } from './routes/settings.js';
 const PORT = parseInt(process.env.API_PORT ?? '3001');
 
 async function start() {
-  const app = Fastify({ logger: { level: 'info' } });
+  // connectionTimeout: drop slow/dead clients that never finish their TLS
+  // handshake or first request. keepAliveTimeout: idle keep-alive sockets
+  // close after this so an abandoned client can't pin a connection.
+  const app = Fastify({
+    logger: { level: 'info' },
+    connectionTimeout: 60_000,
+    keepAliveTimeout: 5_000,
+  });
 
   // Plugins
   await app.register(cors, { origin: true });
