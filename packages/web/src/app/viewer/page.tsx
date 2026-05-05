@@ -11,6 +11,8 @@ import { SettingsModal } from '../../components/SettingsModal.js';
 import { useGenesisStore } from '../../lib/store.js';
 import { useGenesisWebSocket } from '../../lib/useWebSocket.js';
 import { useAuthStore, apiFetch } from '../../lib/auth.js';
+import { ErrorBoundary } from 'react-error-boundary';
+import { PanelErrorFallback } from '../../components/ErrorFallbacks';
 
 interface MapData {
   size: number;
@@ -156,7 +158,9 @@ export default function ViewerPage() {
           </button>
           {civOpen && (
             <div className="flex-1 overflow-hidden">
-              <CivilisationPanel />
+              <ErrorBoundary FallbackComponent={PanelErrorFallback}>
+                <CivilisationPanel />
+              </ErrorBoundary>
             </div>
           )}
         </div>
@@ -170,12 +174,14 @@ export default function ViewerPage() {
               </div>
             </div>
           ) : mapData ? (
-            <WorldMap
-              tiles={mapData.tiles}
-              resourceNodes={mapData.resource_nodes}
-              worldSize={mapData.size}
-              exploredTiles={mapData.explored_tiles}
-            />
+            <ErrorBoundary FallbackComponent={PanelErrorFallback}>
+              <WorldMap
+                tiles={mapData.tiles}
+                resourceNodes={mapData.resource_nodes}
+                worldSize={mapData.size}
+                exploredTiles={mapData.explored_tiles}
+              />
+            </ErrorBoundary>
           ) : (
             <div className="flex items-center justify-center h-full text-red-400 text-sm">
               Failed to load world map
@@ -185,10 +191,14 @@ export default function ViewerPage() {
 
         <div className="w-80 flex flex-col border-l border-gray-700/30 bg-[#0c1020]/50">
           <div className="h-1/2 border-b border-gray-700/30 overflow-hidden">
-            <AgentProfile />
+            <ErrorBoundary FallbackComponent={PanelErrorFallback}>
+              <AgentProfile />
+            </ErrorBoundary>
           </div>
           <div className="h-1/2 overflow-hidden">
-            <EventFeed />
+            <ErrorBoundary FallbackComponent={PanelErrorFallback}>
+              <EventFeed />
+            </ErrorBoundary>
           </div>
         </div>
       </div>

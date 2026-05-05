@@ -1,7 +1,9 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import clsx from 'clsx';
 import { useGenesisStore } from '../lib/store.js';
+import { useAsyncData } from '../lib/useAsyncData';
+import { LoadingSpinner, InlineError, EmptyState } from './AsyncStates';
 
 interface Chronicle {
   chronicle_id: string;
@@ -22,28 +24,25 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
 export function ChroniclePanel() {
   const { worldId } = useGenesisStore();
-  const [chronicles, setChronicles] = useState<Chronicle[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!worldId) return;
-    const load = () =>
-      fetch(`${API}/worlds/${worldId}/chronicles`)
-        .then(r => r.json())
-        .then(setChronicles)
-        .catch(() => {});
-    load();
-    const interval = setInterval(load, 60_000);
-    return () => clearInterval(interval);
-  }, [worldId]);
+  const { data: chronicles, loading, error, isEmpty, refetch } = useAsyncData<Chronicle[]>(
+    async (signal) => {
+      if (!worldId) return [];
+      const res = await fetch(`${API}/worlds/${worldId}/chronicles`, { signal });
+      if (!res.ok) throw new Error(`Failed to load chronicles (${res.status})`);
+      return res.json();
+    },
+    [worldId],
+    { isEmpty: (rows) => rows.length === 0 },
+  );
 
-  if (chronicles.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-xs">
-        No chronicles written yet — first era will be recorded after Day 7
-      </div>
-    );
-  }
+  if (loading) return <LoadingSpinner label="Loading chronicles…" className="h-full" />;
+  if (error)   return <InlineError error={error} onRetry={refetch} label="Couldn't load chronicles." />;
+  if (isEmpty) return (
+    <EmptyState label="No chronicles written yet — first era will be recorded after Day 7" />
+  );
+  if (!chronicles) return null;
 
   return (
     <div className="flex flex-col h-full">

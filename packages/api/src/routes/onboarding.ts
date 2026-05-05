@@ -378,4 +378,74 @@ export async function onboardingRoutes(app: FastifyInstance) {
       spawn_position: { x: spawnX, y: spawnY },
     };
   });
+
+  // ── Batch completion (Phase 5 task 5.3) ──────────────────────────────────
+  //
+  // Accepts every answer + identity in one shot. Recovers from network drops:
+  // the frontend keeps its draft in sessionStorage and submits all-or-nothing
+  // when the user clicks "Create Agent". The per-question endpoints above
+  // remain for backward compat.
+  app.post('/onboarding/sessions/:id/complete-batch', {
+    onRequest: [app.authenticate],
+    config: { rateLimit: { max: 5, timeWindow: '1 hour' } },
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { answers, name, appearance } = req.body as {
+      answers: Array<{ question_number: number; answer_index: number }>;
+      name: string;
+      appearance?: Record<string, unknown>;
+    };
+
+    if (!Array.isArray(answers) || answers.length !== SOUL_QUESTIONS.length) {
+      return reply.code(400).send({
+        error: `Expected ${SOUL_QUESTIONS.length} answers, got ${answers?.length ?? 0}`,
+      });
+    }
+    if (!name || name.length < 2) {
+      return reply.code(400).send({ error: 'Name must be at least 2 characters' });
+    }
+
+    // Fold every answer into accumulated traits (mirrors per-question logic).
+    const traits: Record<string, number> = {};
+    for (const a of answers) {
+      const q = SOUL_QUESTIONS[a.question_number - 1];
+      if (!q) return reply.code(400).send({ error: `Invalid question_number ${a.question_number}` });
+      const opt = q.options[a.answer_index];
+      if (!opt) return reply.code(400).send({ error: `Invalid answer_index ${a.answer_index} for question ${a.question_number}` });
+      for (const [trait, value] of Object.entries(opt.traits)) {
+        traits[trait] = (traits[trait] ?? 50) + value;
+      }
+    }
+    for (const k of Object.keys(traits)) {
+      traits[k] = Math.max(0, Math.min(100, traits[k]));
+    }
+
+    // Persist answers + identity onto the session, then forward to the
+    // existing complete handler logic by issuing the same writes inline.
+    await execute(
+      `UPDATE auth.onboarding_sessions
+       SET answers = $1, accumulated_traits = $2,
+           name = $3, appearance = $4
+       WHERE session_id = $5 AND status = 'in_progress'`,
+      [
+        JSON.stringify(answers),
+        JSON.stringify(traits),
+        name.trim(),
+        JSON.stringify(appearance ?? {}),
+        id,
+      ],
+    );
+
+    // Invoke the same code path as POST /:id/complete by delegating to
+    // Fastify's route table. Using inject() keeps everything inside one
+    // request lifecycle and reuses all the spawn/insert logic above.
+    const completeRes = await app.inject({
+      method: 'POST',
+      url: `/onboarding/sessions/${id}/complete`,
+      headers: { authorization: req.headers.authorization ?? '' },
+    });
+
+    reply.code(completeRes.statusCode);
+    return JSON.parse(completeRes.body);
+  });
 }

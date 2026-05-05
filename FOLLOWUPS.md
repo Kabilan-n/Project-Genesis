@@ -82,3 +82,17 @@ resolved it; do not delete the entry.
     - `OpenAIClient` / `OllamaClient` / `HuggingFaceClient` — tied to the
       Phase 4.1 follow-up that wraps these providers in circuit breakers.
     - `ClaudeClient.ts` — deprecated; deleted by Phase 7 / Task 7.1.
+- **Phase 5 / Task 5.2 — useAsyncData migration incomplete.** The hook
+  + AsyncStates primitives + `packages/web/AUDIT.md` are in place;
+  ChroniclePanel is the worked reference. The remaining 11 components
+  (AgentProfile, BeliefPanel, ChatThreadModal, CivilisationPanel,
+  ConversationHistory, FamilyTree, LawPanel, WarPanel, SettingsModal,
+  viewer/page.tsx top-level fetches) still use ad-hoc useState +
+  useEffect. Migrate incrementally; track in AUDIT.md.
+- **Phase 5 / Task 5.3 — wizard UI rewrite still pending.** The
+  `/onboarding/sessions/:id/complete-batch` endpoint exists and the
+  frontend `useOnboardingDraft` Zustand slice persists answers to
+  sessionStorage, but the actual 12-step wizard pages still POST per
+  question. Replace those handlers with `useOnboardingDraft.setAnswer`
+  and submit via `useOnboardingDraft.submit()` on the final step.
+  Per-question endpoints stay live for backward compat.
