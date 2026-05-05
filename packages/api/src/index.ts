@@ -55,10 +55,44 @@ async function start() {
 
   const wsClients = new Set<any>();
 
+  // Per-connection heartbeat: server sends a pong every 30s and closes the
+  // socket if the client hasn't sent a ping/message in 45s. Pairs with the
+  // client-side heartbeat in packages/web/src/lib/useWebSocket.ts.
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  const STALE_LIMIT_MS = 45_000;
+
   app.get('/ws', { websocket: true }, (socket) => {
     wsClients.add(socket);
-    socket.on('close', () => wsClients.delete(socket));
-    socket.on('error', () => wsClients.delete(socket));
+    let lastSeen = Date.now();
+
+    const heartbeat = setInterval(() => {
+      try {
+        if (Date.now() - lastSeen > STALE_LIMIT_MS) {
+          socket.close(4000, 'stale_heartbeat');
+          return;
+        }
+        socket.send(JSON.stringify({ type: 'pong', t: Date.now() }));
+      } catch { /* socket closed */ }
+    }, HEARTBEAT_INTERVAL_MS);
+
+    socket.on('message', (raw) => {
+      lastSeen = Date.now();
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg?.type === 'ping') {
+          socket.send(JSON.stringify({ type: 'pong', t: Date.now() }));
+        }
+      } catch { /* ignore non-JSON */ }
+    });
+
+    socket.on('close', () => {
+      clearInterval(heartbeat);
+      wsClients.delete(socket);
+    });
+    socket.on('error', () => {
+      clearInterval(heartbeat);
+      wsClients.delete(socket);
+    });
   });
 
   subscriber.on('message', (_channel, message) => {

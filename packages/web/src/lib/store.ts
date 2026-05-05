@@ -61,6 +61,9 @@ interface GenesisStore {
   setAgents: (agents: AgentSummary[]) => void;
   setGroups: (groups: GroupSummary[]) => void;
   upsertGroup: (group: GroupSummary) => void;
+  // WebSocket connection state — single authoritative source.
+  connectionState: 'connecting' | 'open' | 'reconnecting' | 'closed' | 'failed';
+  setConnectionState: (s: GenesisStore['connectionState']) => void;
 }
 
 export const useGenesisStore = create<GenesisStore>((set, get) => ({
@@ -105,4 +108,7 @@ export const useGenesisStore = create<GenesisStore>((set, get) => ({
     groups.set(group.group_id, group);
     return { groups };
   }),
+
+  connectionState: 'closed',
+  setConnectionState: (connectionState) => set({ connectionState }),
 }));
