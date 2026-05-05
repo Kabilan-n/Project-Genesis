@@ -15,7 +15,7 @@ export function AppErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
           simulation itself keeps running — you can reload to recover.
         </p>
         <pre className="text-xs bg-zinc-950 border border-zinc-800 rounded p-3 max-h-40 overflow-auto text-zinc-500">
-          {error?.message ?? 'Unknown error'}
+          {(error as Error | undefined)?.message ?? 'Unknown error'}
         </pre>
         <div className="flex gap-2">
           <button
@@ -45,7 +45,7 @@ export function PanelErrorFallback({ error, resetErrorBoundary }: FallbackProps)
     <div className="p-4 m-2 bg-red-950/40 border border-red-900/50 rounded text-sm space-y-2">
       <div className="font-medium text-red-300">This panel hit an error.</div>
       <div className="text-xs text-red-400/70 truncate">
-        {error?.message ?? 'Unknown error'}
+        {(error as Error | undefined)?.message ?? 'Unknown error'}
       </div>
       <button
         onClick={resetErrorBoundary}
