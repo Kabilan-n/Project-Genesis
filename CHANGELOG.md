@@ -74,6 +74,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 4 — completion summary
+- **End-of-Phase-4 simulation unit-test count: 306 passing** across 25 files
+  (+4 from end of Phase 3, all from CircuitBreaker.test.ts). API/Web changes
+  in this phase are runtime concerns without unit-test fixtures.
+- New: `llm/breaker.ts` with `BREAKER_OPTIONS` and `attachBreakerEvents`;
+  Anthropic LLM calls now flow through an opossum circuit breaker (15s
+  timeout, 50% error threshold, 30s reset, 5-call volume threshold).
+  `metrics.llmCircuitOpens` and `metrics.llmCircuitRejected` track state.
+- New: `observability/logger.ts` (Pino) with redact rules covering
+  password / token / api_key / apiKey / secret. `engineLogger(name)`
+  produces a child logger per engine.
+- `console.*` migrated to structured logs in `index.ts`, `breaker.ts`,
+  `SimulationLoop.ts`, `AgentEngine`, `db.ts`, `MemoryDecay`,
+  `ChronicleEngine`, `ConstructionEngine`, `ObserverEngine`,
+  `PromptBuilder`, `AnthropicClient`. `seed.ts`, the deprecated
+  `ClaudeClient.ts`, and the un-migrated providers deliberately retained;
+  see `FOLLOWUPS.md`.
+- API: Fastify `connectionTimeout=60s`, `keepAliveTimeout=5s`.
+- Web: `apiFetch` now AbortController-bound with a default 30s timeout
+  (overridable via `timeoutMs`); throws a typed `ApiTimeoutError`.
+- WebSocket lifecycle hardened: client-side exponential-backoff
+  reconnection (cap 30s, max 10 attempts → `failed` state), 30s heartbeat
+  with 10s pong timeout, explicit unmount close + timer cleanup.
+  Server-side: per-connection 30s heartbeat with 45s stale-limit cutoff.
+- `connectionState` ('connecting' | 'open' | 'reconnecting' | 'closed' |
+  'failed') added to the Zustand store as the single authoritative source.
+- API rate limiting via `@fastify/rate-limit`: global 100/min/IP (health
+  and /ws allowlisted), per-route overrides on `/auth/register` (5/h),
+  `/auth/login` (10/min), and `/onboarding/sessions` (3/h/user).
+
 ### Phase 3 — completion summary
 - **End-of-Phase-3 unit-test count: 302 passing** across 24 files
   (+16 from end of Phase 2).
