@@ -4,8 +4,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, queryOne, execute } from '../db.js';
 
 export async function authRoutes(app: FastifyInstance) {
-  // Register
-  app.post('/auth/register', async (req, reply) => {
+  // Register — strict rate limit. Account creation is heavyweight
+  // (bcrypt + DB writes) and a vector for resource-exhaustion attacks.
+  app.post('/auth/register', {
+    config: { rateLimit: { max: 5, timeWindow: '1 hour' } },
+  }, async (req, reply) => {
     const { email, username, password } = req.body as {
       email: string; username: string; password: string;
     };
@@ -33,8 +36,12 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.code(201).send({ token, user });
   });
 
-  // Login
-  app.post('/auth/login', async (req, reply) => {
+  // Login — also rate-limited as a brute-force protection. Tighter than
+  // global so a credential-stuffing campaign can't exhaust the global
+  // budget for legitimate users.
+  app.post('/auth/login', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const { email, password } = req.body as { email: string; password: string };
 
     const user = await queryOne<{

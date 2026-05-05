@@ -162,7 +162,11 @@ function calculateArchetype(traits: Record<string, number>): string {
 
 export async function onboardingRoutes(app: FastifyInstance) {
   // Start session
-  app.post('/onboarding/sessions', { onRequest: [app.authenticate] }, async (req, reply) => {
+  app.post('/onboarding/sessions', {
+    onRequest: [app.authenticate],
+    // Onboarding kicks off LLM calls; cap to 3/hr/user.
+    config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
+  }, async (req, reply) => {
     const { user_id } = req.user as { user_id: string };
     const { mode = 'discover', world_id } = req.body as { mode?: string; world_id?: string };
 
