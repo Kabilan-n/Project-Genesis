@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { AppBoundary } from './app-boundary';
 
 export const metadata: Metadata = {
   title: 'Project Genesis',
@@ -15,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <script dangerouslySetInnerHTML={{ __html: `window.__genesis=${JSON.stringify({worldId,apiUrl,wsUrl})}` }} />
-        {children}
+        <AppBoundary>{children}</AppBoundary>
       </body>
     </html>
   );
