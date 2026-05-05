@@ -16,13 +16,16 @@ import type {
   Agent, AgentTraits, PerceptionContext, Relationship,
   ConversationTurn, TradeOffer, AgentKnowledge, Group,
 } from '../types.js';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('PromptBuilder');
 
 export type PromptMode = 'verbose' | 'compact';
 
 export function resolvePromptMode(envValue: string | undefined): PromptMode {
   if (envValue === 'true' || envValue === 'compact') return 'compact';
   if (envValue && envValue !== 'false' && envValue !== 'verbose') {
-    console.warn(`[PromptBuilder] Unknown OPTIMIZE_PROMPTS value "${envValue}", defaulting to verbose`);
+    log.warn({ envValue }, 'unknown_optimize_prompts_value');
   }
   return 'verbose';
 }

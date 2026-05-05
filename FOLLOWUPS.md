@@ -66,3 +66,19 @@ resolved it; do not delete the entry.
 - **Phase 1 / Task 1.4 — `ADDING_PROVIDERS.md` shows the regex pattern.**
   The provider-authoring guide demonstrates the now-deprecated parser style.
   Update when other providers are migrated to Zod.
+- **Phase 4 / Task 4.1 — non-Anthropic providers do not yet have a circuit
+  breaker.** Same deferral pattern as Phase 1.4's Zod migration: only
+  `AnthropicClient` was wrapped this round. Apply `BREAKER_OPTIONS` +
+  `attachBreakerEvents` to `OpenAIClient`, `OllamaClient`,
+  `HuggingFaceClient` when they next get touched.
+- **Phase 4 / Task 4.2 — `console.*` sweep is mostly complete; three files
+  intentionally remain.** Migrated: `index.ts`, `breaker.ts`,
+  `SimulationLoop.ts`, `AgentEngine`, `db.ts`, `MemoryDecay`,
+  `ChronicleEngine`, `ConstructionEngine`, `ObserverEngine`,
+  `PromptBuilder`, `AnthropicClient`. Skipped:
+    - `seed.ts` — one-shot user-facing CLI script; the console output is
+      the operator's UX. Migrate when Phase 8 / Task 8.4 reworks
+      `WORLD_ID` autoconfig (operator flow changes anyway).
+    - `OpenAIClient` / `OllamaClient` / `HuggingFaceClient` — tied to the
+      Phase 4.1 follow-up that wraps these providers in circuit breakers.
+    - `ClaudeClient.ts` — deprecated; deleted by Phase 7 / Task 7.1.

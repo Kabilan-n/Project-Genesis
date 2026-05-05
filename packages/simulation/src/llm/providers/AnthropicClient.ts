@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import CircuitBreaker from 'opossum';
 import type { AgentDecision } from '../../types.js';
 import type { TradeResponse } from '../../social/TradeEngine.js';
 import type { LLMClient, ConversationTurnResponse } from '../types.js';
@@ -9,68 +10,81 @@ import {
   SAFE_DEFAULT_DECISION, SAFE_DEFAULT_CONVERSATION_TURN, SAFE_DEFAULT_TRADE_RESPONSE,
 } from '../defaults.js';
 import { metrics } from '../../observability/metrics.js';
+import { BREAKER_OPTIONS, attachBreakerEvents } from '../breaker.js';
+import { engineLogger } from '../../observability/logger.js';
+
+const log = engineLogger('AnthropicClient');
+
+type CompletionFn = (args: { prompt: string; maxTokens: number }) => Promise<string>;
 
 export class AnthropicClient implements LLMClient {
   private client: Anthropic;
+  private completionBreaker: CircuitBreaker<Parameters<CompletionFn>, string>;
 
   constructor(private model: string, apiKey?: string) {
     this.client = new Anthropic({
       apiKey: apiKey || process.env.ANTHROPIC_API_KEY,
     });
+
+    // One breaker covers every Anthropic call. Provider-specific so a
+    // Claude outage doesn't open the breaker for an OpenAI fallback.
+    const completion: CompletionFn = async ({ prompt, maxTokens }) => {
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      return response.content[0].type === 'text' ? response.content[0].text : '';
+    };
+    this.completionBreaker = new CircuitBreaker(completion, BREAKER_OPTIONS);
+    attachBreakerEvents(this.completionBreaker, { label: 'anthropic' });
+  }
+
+  /**
+   * Run a completion via the circuit breaker. On breaker-open or any
+   * provider error, returns null so callers can apply their own typed
+   * fallback. The breaker counts the rejection toward its window.
+   */
+  private async safeCompletion(prompt: string, maxTokens: number): Promise<string | null> {
+    try {
+      return await this.completionBreaker.fire({ prompt, maxTokens });
+    } catch {
+      return null;
+    }
   }
 
   async getAgentDecision(prompt: string): Promise<AgentDecision> {
-    try {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 300,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const text = response.content[0].type === 'text' ? response.content[0].text : '';
-      return this.parseDecision(text);
-    } catch (err) {
+    const text = await this.safeCompletion(prompt, 300);
+    if (text === null) {
       metrics.llmCallErrors.inc({ kind: 'decision' });
-      console.error('[AnthropicClient] Error calling API:', err);
       return SAFE_DEFAULT_DECISION;
     }
+    return this.parseDecision(text);
   }
 
   async getConversationResponse(prompt: string): Promise<ConversationTurnResponse> {
-    try {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 250,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const text = response.content[0].type === 'text' ? response.content[0].text : '';
-      return this.parseConversationTurn(text);
-    } catch (err) {
+    const text = await this.safeCompletion(prompt, 250);
+    if (text === null) {
       metrics.llmCallErrors.inc({ kind: 'conversation' });
-      console.error('[AnthropicClient] Conversation error:', err);
       return SAFE_DEFAULT_CONVERSATION_TURN;
     }
+    return this.parseConversationTurn(text);
   }
 
   async getTradeResponse(prompt: string): Promise<TradeResponse> {
-    try {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 250,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const text = response.content[0].type === 'text' ? response.content[0].text : '';
-      return this.parseTradeResponse(text);
-    } catch (err) {
+    const text = await this.safeCompletion(prompt, 250);
+    if (text === null) {
       metrics.llmCallErrors.inc({ kind: 'trade' });
-      console.error('[AnthropicClient] Trade error:', err);
       return SAFE_DEFAULT_TRADE_RESPONSE;
     }
+    return this.parseTradeResponse(text);
   }
 
   async getRawCompletion(prompt: string, maxTokens = 100): Promise<string> {
+    // Raw completion does NOT use the breaker because its callers (e.g.,
+    // MemoryDecay.consolidateBatch) already have their own try/catch +
+    // deterministic fallback. Adding a breaker here would double-count
+    // failures.
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: maxTokens,
@@ -92,10 +106,11 @@ export class AnthropicClient implements LLMClient {
       return DecisionSchema.parse(parsed) as AgentDecision;
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'decision' });
-      console.warn('[AnthropicClient] parseDecision failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseDecision',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_DECISION;
     }
   }
@@ -107,10 +122,11 @@ export class AnthropicClient implements LLMClient {
       return ConversationTurnSchema.parse(parsed);
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'conversation' });
-      console.warn('[AnthropicClient] parseConversationTurn failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseConversationTurn',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_CONVERSATION_TURN;
     }
   }
@@ -122,10 +138,11 @@ export class AnthropicClient implements LLMClient {
       return TradeResponseSchema.parse(parsed) as TradeResponse;
     } catch (err) {
       metrics.llmParseFailures.inc({ type: 'trade' });
-      console.warn('[AnthropicClient] parseTradeResponse failure:', {
+      log.warn({
         err: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 500),
-      });
+        parser: 'parseTradeResponse',
+      }, 'llm_parse_failure');
       return SAFE_DEFAULT_TRADE_RESPONSE;
     }
   }

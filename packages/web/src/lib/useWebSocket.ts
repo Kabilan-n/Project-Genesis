@@ -2,23 +2,74 @@
 import { useEffect, useRef } from 'react';
 import { useGenesisStore } from './store.js';
 
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS  = 10_000;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export function useGenesisWebSocket() {
   const store = useGenesisStore();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatTimeout  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttempt  = useRef<number>(0);
+  const isMounted = useRef<boolean>(true);
 
   useEffect(() => {
     const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001/ws';
+    isMounted.current = true;
+
+    const clearTimers = () => {
+      if (reconnectTimeout.current) {
+        clearTimeout(reconnectTimeout.current);
+        reconnectTimeout.current = null;
+      }
+      if (heartbeatInterval.current) {
+        clearInterval(heartbeatInterval.current);
+        heartbeatInterval.current = null;
+      }
+      if (heartbeatTimeout.current) {
+        clearTimeout(heartbeatTimeout.current);
+        heartbeatTimeout.current = null;
+      }
+    };
+
+    const startHeartbeat = (ws: WebSocket) => {
+      heartbeatInterval.current = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+        // If we don't see ANY message (including the server's ping or any
+        // event) within HEARTBEAT_TIMEOUT_MS, treat the connection as dead.
+        heartbeatTimeout.current = setTimeout(() => {
+          try { ws.close(4000, 'heartbeat_timeout'); } catch { /* ignore */ }
+        }, HEARTBEAT_TIMEOUT_MS);
+      }, HEARTBEAT_INTERVAL_MS);
+    };
 
     const connect = () => {
+      if (!isMounted.current) return;
+      store.setConnectionState(reconnectAttempt.current === 0 ? 'connecting' : 'reconnecting');
+
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
-      ws.onopen = () => console.log('[WS] Connected to Genesis');
+      ws.onopen = () => {
+        reconnectAttempt.current = 0;
+        store.setConnectionState('open');
+        startHeartbeat(ws);
+      };
 
       ws.onmessage = (evt) => {
+        // Any message clears the heartbeat-pending timer — the connection
+        // is alive even if it's not a pong specifically.
+        if (heartbeatTimeout.current) {
+          clearTimeout(heartbeatTimeout.current);
+          heartbeatTimeout.current = null;
+        }
         try {
           const msg = JSON.parse(evt.data);
+          if (msg.type === 'pong' || msg.type === 'ping') return;
           switch (msg.type) {
             case 'world:tick':
               store.setStats({
@@ -228,19 +279,56 @@ export function useGenesisWebSocket() {
         } catch { /* ignore malformed */ }
       };
 
-      ws.onclose = () => {
-        console.log('[WS] Disconnected — reconnecting in 3s');
-        reconnectTimeout.current = setTimeout(connect, 3000);
+      ws.onclose = (evt) => {
+        // Stop heartbeats — they're tied to this socket only.
+        if (heartbeatInterval.current) {
+          clearInterval(heartbeatInterval.current);
+          heartbeatInterval.current = null;
+        }
+        if (heartbeatTimeout.current) {
+          clearTimeout(heartbeatTimeout.current);
+          heartbeatTimeout.current = null;
+        }
+
+        // Component unmount issues an explicit close (code 1000); don't
+        // reconnect in that case.
+        if (!isMounted.current || evt.code === 1000) {
+          store.setConnectionState('closed');
+          return;
+        }
+
+        if (reconnectAttempt.current >= MAX_RECONNECT_ATTEMPTS) {
+          store.setConnectionState('failed');
+          return;
+        }
+
+        // Exponential backoff capped at MAX_RECONNECT_DELAY_MS.
+        const delay = Math.min(
+          MAX_RECONNECT_DELAY_MS,
+          1000 * Math.pow(2, reconnectAttempt.current),
+        );
+        reconnectAttempt.current += 1;
+        store.setConnectionState('reconnecting');
+        reconnectTimeout.current = setTimeout(connect, delay);
       };
 
-      ws.onerror = () => ws.close();
+      ws.onerror = () => {
+        // Errors precede close; let onclose drive reconnect.
+        try { ws.close(); } catch { /* ignore */ }
+      };
     };
 
     connect();
 
     return () => {
-      if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
-      wsRef.current?.close();
+      isMounted.current = false;
+      clearTimers();
+      try {
+        wsRef.current?.close(1000, 'component_unmount');
+      } catch { /* ignore */ }
     };
+  // We deliberately don't depend on `store` — Zustand getters are stable
+  // and re-running this effect would tear down the connection on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

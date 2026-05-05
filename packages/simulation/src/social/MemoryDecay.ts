@@ -1,5 +1,6 @@
 import type { LLMClient } from '../llm/types.js';
 import { retry } from '../util/retry.js';
+import { engineLogger } from '../observability/logger.js';
 
 const DECAY_RATE = 0.0008;          // strength lost per tick for average memory
 const CONSOLIDATION_THRESHOLD = 0.15; // below this + low importance → eligible for consolidation
@@ -33,11 +34,7 @@ export interface MemoryDecayDeps {
   logger: MemoryDecayLogger;
 }
 
-const NOOP_LOGGER: MemoryDecayLogger = {
-  info:  (obj, msg) => console.log(msg ?? '', obj),
-  warn:  (obj, msg) => console.warn(msg ?? '', obj),
-  error: (obj, msg) => console.error(msg ?? '', obj),
-};
+const DEFAULT_LOGGER: MemoryDecayLogger = engineLogger('MemoryDecay');
 
 /**
  * MemoryDecay runs each world tick to:
@@ -55,7 +52,7 @@ export class MemoryDecay {
   constructor(deps: MemoryDecayDeps) {
     this.db = deps.db;
     this.llm = deps.llm;
-    this.logger = deps.logger ?? NOOP_LOGGER;
+    this.logger = deps.logger ?? DEFAULT_LOGGER;
   }
 
   /**

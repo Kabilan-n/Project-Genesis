@@ -10,6 +10,7 @@ import { WorldEngine } from '../world/WorldEngine.js';
 import { ConversationEngine } from '../social/ConversationEngine.js';
 import { RelationshipEngine } from '../social/RelationshipEngine.js';
 import { TradeEngine } from '../social/TradeEngine.js';
+import { engineLogger } from '../observability/logger.js';
 import { GossipEngine } from '../cultural/GossipEngine.js';
 import { GroupEngine } from '../cultural/GroupEngine.js';
 import { KnowledgeEngine } from '../cultural/KnowledgeEngine.js';
@@ -43,6 +44,8 @@ const HP_DAMAGE_PER_CRITICAL_NEED = 1;
 // and HP is not already full, HP recovers at +0.5/tick.
 const HP_RECOVERY_PER_TICK   = 0.5;
 const HP_RECOVERY_NEED_FLOOR = 60;
+
+const log = engineLogger('AgentEngine');
 
 export class AgentEngine {
   private llm: LLMClient;
@@ -1305,7 +1308,9 @@ export class AgentEngine {
       );
     }
 
-    console.log(`[AgentEngine] ${agent.name} died from ${cause} at tick ${tick}`);
+    log.info({
+      agentId: agent.agent_id, name: agent.name, cause, tick, day,
+    }, 'agent_died');
   }
 
   private async loadAgent(agentId: string): Promise<Agent | null> {

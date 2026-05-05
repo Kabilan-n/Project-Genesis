@@ -1,5 +1,8 @@
 import { query, queryOne, execute } from '../db.js';
 import type { Agent } from '../types.js';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('ConstructionEngine');
 
 export type StructureType = 'shelter' | 'farm' | 'storage' | 'watchtower' | 'market_stall' | 'temple' | 'forge' | 'library';
 
@@ -219,7 +222,10 @@ export class ConstructionEngine {
       );
     }
 
-    console.log(`[ConstructionEngine] ${structure.structure_type} completed at (${structure.x}, ${structure.y}) — tick ${tick}`);
+    log.info({
+      structureType: structure.structure_type,
+      x: structure.x, y: structure.y, tick,
+    }, 'structure_completed');
   }
 
   // ── Structure benefits (called per tick when agent is on tile) ────────────────

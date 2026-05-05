@@ -1,5 +1,8 @@
 import { query, queryOne, execute } from '../db.js';
 import Anthropic from '@anthropic-ai/sdk';
+import { engineLogger } from '../observability/logger.js';
+
+const log = engineLogger('ChronicleEngine');
 
 const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5-20251001';
 
@@ -143,7 +146,7 @@ Then write the narrative. Focus on the most dramatic and consequential events. M
       });
       rawNarrative = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
     } catch (err) {
-      console.error('[ChronicleEngine] LLM error:', err);
+      log.error({ err: String(err), eraStartDay, eraEndDay }, 'llm_chronicle_failed');
       rawNarrative = `Days ${eraStartDay}–${eraEndDay}: An era of ${events.length} significant events, including ${events[0]?.title ?? 'many changes'}.`;
     }
 
