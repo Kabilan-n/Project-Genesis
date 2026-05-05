@@ -74,6 +74,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 5 — completion summary
+- Web `react-error-boundary` wrapping: app-level boundary in `layout.tsx`
+  (via a client `AppBoundary`) and per-panel boundaries on `WorldMap`,
+  `AgentProfile`, `EventFeed`, `CivilisationPanel`. New `AppErrorFallback`
+  + `PanelErrorFallback` UIs.
+- New `lib/useAsyncData.ts` hook + `components/AsyncStates.tsx` primitives
+  (LoadingSpinner, InlineError, EmptyState) for consistent four-state
+  rendering. `ChroniclePanel` migrated as the worked reference. Audit of
+  all async UI lives in `packages/web/AUDIT.md`.
+- New `POST /onboarding/sessions/:id/complete-batch` endpoint accepts
+  every answer + identity in one shot; the existing per-question
+  endpoints remain live for backward compat.
+- New `lib/onboardingDraft.ts` Zustand slice persisted to sessionStorage
+  with a 24h TTL — the wizard can recover drafts across refreshes.
+- 306 simulation tests still passing (Phase 5 is frontend/API only,
+  no new simulation unit tests).
+
 ### Phase 4 — completion summary
 - **End-of-Phase-4 simulation unit-test count: 306 passing** across 25 files
   (+4 from end of Phase 3, all from CircuitBreaker.test.ts). API/Web changes
