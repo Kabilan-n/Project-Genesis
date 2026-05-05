@@ -34,6 +34,23 @@ You observe through a real-time web UI. You cannot interfere.
 | **Accounts** | User registration / login (JWT), per-user agent ownership, subscription tier field |
 | **Onboarding wizard** | 12 scenario-based "soul questions" that accumulate 19 trait modifiers and derive a custom archetype for each user-created agent |
 
+### Stabilization (Phases 0–5 complete)
+
+Project Genesis is undergoing a phased stabilization pass tracked in
+`GENESIS_REMEDIATION_PLAN.md` (local-only, gitignored). The first six phases
+have shipped to `dev`; everything below is in production:
+
+| Layer | Hardening |
+|-------|-----------|
+| **Correctness** | Recalibrated need-decay rates, reachable `romantic_partner` state with monogamy + post-pairing transitions + `widowed`, dependency-injected MemoryDecay with retry + idempotent consolidation runs, Zod-validated LLM payloads (no more silent regex fallback), unified `PromptBuilder` with verbose/compact modes |
+| **Resilience** | Per-world Redis tick lock, Postgres transaction + advisory-lock helpers, opossum circuit breaker on Anthropic calls, structured Pino logging with redaction, request timeouts (server + client), WebSocket heartbeat + exponential-backoff reconnect, `@fastify/rate-limit` on auth and onboarding |
+| **Frontend** | `react-error-boundary` at app + per-panel level, `useAsyncData` hook + `LoadingSpinner` / `InlineError` / `EmptyState` primitives, single-shot batch onboarding endpoint backed by sessionStorage draft store |
+| **Tests** | 156 → **306 passing** unit tests across 25 files; coverage thresholds (70/70/60/70) configured for `npm run test:coverage` |
+| **Migrations** | `011_romantic_candidacy.sql`, `012_widowed_state.sql`, `013_consolidation_state.sql` |
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for the full per-phase breakdown and
+[`FOLLOWUPS.md`](./FOLLOWUPS.md) for tracked deferrals.
+
 ---
 
 ## Tech Stack
@@ -255,17 +272,21 @@ HUGGINGFACE_API_KEY=hf_...
 
 ## Token Optimisation
 
-Token optimisation is **enabled by default** (`OPTIMIZE_PROMPTS=true`). This uses compact prompts (~150–250 tokens per decision instead of ~600–800), reducing API costs at scale with minimal quality loss.
+Token optimisation is **enabled by default** (`OPTIMIZE_PROMPTS=true`). This selects the compact mode of the unified `PromptBuilder` — ~150–250 tokens per decision prompt instead of ~600–800 — reducing API costs at scale with minimal quality loss.
 
-The optimised builder uses:
-- Terse `key:value` syntax instead of prose headers
+Compact mode:
+- Terse `key:value` lines instead of `=== HEADER ===` blocks
 - Omits empty sections
 - Caps memories at 3, nearby agents at 3, knowledge facts at 3
 - Abbreviated JSON schema
 
-To disable: set `OPTIMIZE_PROMPTS=false` in your `.env`.
+`OPTIMIZE_PROMPTS=false` (or `verbose`) selects the prose-style mode.
+Unknown values warn and fall back to verbose. The current setting is shown in
+the observer UI under **Settings** (gear icon).
 
-You can verify the current setting in the observer UI under **Settings** (gear icon) in the top bar.
+> Stabilization 1.5 collapsed the original `PromptBuilder` and
+> `PromptBuilderOptimised` classes into a single `PromptBuilder` whose
+> `mode` parameter selects rendering — same callers, half the maintenance.
 
 ---
 
@@ -286,11 +307,16 @@ Agent-world/
 │   │       ├── observer/        # ObserverEngine (snapshots, heatmap, biographies)
 │   │       ├── llm/             # LLM abstraction layer
 │   │       │   ├── LLMFactory.ts
-│   │       │   ├── PromptBuilder.ts           # Full prompts (~600-800 tokens)
-│   │       │   ├── PromptBuilderOptimised.ts  # Compact prompts (~150-250 tokens)
-│   │       │   └── providers/   # AnthropicClient, OpenAIClient, OllamaClient, HuggingFaceClient
-│   │       ├── db/migrations/   # SQL migrations (001–009)
-│   │       └── __tests__/       # 156 tests, 100% passing
+│   │       │   ├── PromptBuilder.ts           # Unified verbose/compact via constructor mode
+│   │       │   ├── schemas.ts                 # Zod schemas for decision/conversation/trade
+│   │       │   ├── defaults.ts                # SAFE_DEFAULT_* parse-failure sentinels
+│   │       │   ├── breaker.ts                 # Shared opossum CircuitBreaker config
+│   │       │   └── providers/   # AnthropicClient (Zod + breaker), OpenAIClient, OllamaClient, HuggingFaceClient
+│   │       ├── observability/   # logger.ts (Pino), metrics.ts (counters)
+│   │       ├── util/            # retry.ts (exponential backoff)
+│   │       ├── world/           # WorldEngine, MapGenerator, SimulationLoop (Redis tick lock)
+│   │       ├── db.ts            # query/queryOne/execute + withTransaction + withAdvisoryLock
+│   │       └── __tests__/       # 306 tests, 100% passing (CONVENTIONS.md, integration/)
 │   │
 │   ├── api/                     # Fastify REST + WebSocket server
 │   │   └── src/
@@ -319,10 +345,16 @@ Agent-world/
 │           │   ├── ConversationModal.tsx # Single-conversation transcript (legacy)
 │           │   ├── CreateAgentModal.tsx  # 12-question soul-wizard → spawn your agent
 │           │   └── SettingsModal.tsx     # Shows current config & optimize status
+│           ├── components/
+│           │   ├── ErrorFallbacks.tsx    # AppErrorFallback + PanelErrorFallback
+│           │   └── AsyncStates.tsx       # LoadingSpinner, InlineError, EmptyState
+│           ├── app/app-boundary.tsx      # Client-only ErrorBoundary wrapper for layout.tsx
 │           └── lib/
-│               ├── auth.ts       # Zustand auth store + apiFetch helper (JWT)
-│               ├── store.ts      # Zustand world store
-│               └── useWebSocket.ts
+│               ├── auth.ts                # Zustand auth + apiFetch (AbortController, ApiTimeoutError)
+│               ├── store.ts               # Zustand world store + connectionState
+│               ├── useWebSocket.ts        # Heartbeat + exponential-backoff reconnect
+│               ├── useAsyncData.ts        # Standard four-state async hook
+│               └── onboardingDraft.ts     # sessionStorage-backed draft for batch onboarding
 │
 ├── docker-compose.yml           # Postgres + Redis
 ├── .env                         # Configuration (see above)
@@ -350,22 +382,29 @@ Migrations live in `packages/simulation/src/db/migrations/` and run in order:
 | `008_generations.sql` | Generations | Reproduction records, trait drift events |
 | `009_fog_of_war.sql` | Fog of war | `worlds.explored_tiles` — per-tile first-seen tick + first-observer agent |
 | `010_partner_memory.sql` | Partner memory | Adds `partner_agent_ids[]` (GIN-indexed) + nullable `embedding VECTOR(1536)` (ivfflat) to `memory.episodic_memories` for per-partner memory recall and future semantic retrieval |
+| `011_romantic_candidacy.sql` | Stabilization 1.2 | `is_romantic_candidate` flag + `romantic_started_tick` on `social.relationships`. Unlocks the `romantic_partner` state machine. |
+| `012_widowed_state.sql` | Stabilization 1.2 | Adds `widowed` to the `relationship_type` CHECK constraint so a surviving partner's relationship can transition cleanly on death. |
+| `013_consolidation_state.sql` | Stabilization 1.3 | New `memory.consolidation_runs` table with `(agent_id, day)` UNIQUE so MemoryDecay's daily consolidation is idempotent and pending runs can be resumed on startup. |
 
 ---
 
 ## API Endpoints
 
 ### Auth
-- `POST /auth/register` — create account, returns `{ token, user }`
-- `POST /auth/login` — returns JWT token
+- `POST /auth/register` — create account, returns `{ token, user }`. Rate-limited to **5/hour/IP**.
+- `POST /auth/login` — returns JWT token. Rate-limited to **10/min/IP** (brute-force protection).
 - `GET /users/me` — current user + the agents they have created (requires `Authorization: Bearer <token>`)
 
+> All endpoints share a global **100 req/min/IP** limit via `@fastify/rate-limit`.
+> `/health` and `/ws` are explicitly allowlisted. Tunable via `API_RATE_LIMIT_GLOBAL_MAX`.
+
 ### Onboarding (agent creation wizard)
-- `POST /onboarding/sessions` — start a session (`mode` = `discover` | `design` | `random`)
+- `POST /onboarding/sessions` — start a session (`mode` = `discover` | `design` | `random`). Rate-limited to **3/hour/user**.
 - `GET /onboarding/sessions/:id/questions/:n` — fetch question `n` of 12 (options only; trait values hidden)
 - `POST /onboarding/sessions/:id/answers` — submit `{question_number, answer_index}`, accumulate traits
 - `POST /onboarding/sessions/:id/identity` — set agent `name` + `appearance`
 - `POST /onboarding/sessions/:id/complete` — finalise: compute archetype, spawn the agent, seed starting inventory/skills
+- `POST /onboarding/sessions/:id/complete-batch` *(new in stabilization 5.3)* — submit all 12 answers + identity in one shot. Rate-limited to **5/hour**. Backed by the frontend's sessionStorage `useOnboardingDraft` store so a refresh or network drop never loses progress.
 
 ### Worlds
 - `GET /worlds` — list all non-archived worlds
@@ -411,7 +450,12 @@ Migrations live in `packages/simulation/src/db/migrations/` and run in order:
 - `GET /config` — current simulation configuration
 
 ### WebSocket
-- `ws://localhost:3001/ws` — real-time event stream
+- `ws://localhost:3001/ws` — real-time event stream.
+- **Heartbeat:** server sends `pong` every 30s and closes the socket if no
+  client message arrived in 45s. The client (in `useWebSocket.ts`) sends a
+  `ping` every 30s and gives up on the socket if nothing comes back within
+  10s. On unexpected close the client reconnects with exponential backoff
+  capped at 30s, transitioning to a `failed` state after 10 attempts.
 
 ---
 
@@ -424,9 +468,17 @@ npm run test:watch  # watch mode
 npm run test:coverage
 ```
 
-**156 tests, 100% passing** across 8 test files covering all core modules. No real DB, Redis, or API calls in tests — fully isolated with Vitest mocks and sub-classing.
+**306 tests, 100% passing** across 25 test files. No real DB, Redis, or API
+calls in tests — fully isolated with Vitest mocks and sub-classing. Conventions
+are documented in `packages/simulation/src/__tests__/CONVENTIONS.md`.
 
-See [TEST_REPORT.md](./TEST_REPORT.md) for the full breakdown.
+Coverage thresholds (lines/functions/statements 70, branches 60) live in
+`vitest.config.ts` and apply to `npm run test:coverage`. Phase 8 will wire CI
+to enforce them on PRs.
+
+Integration tests against real Postgres + Redis containers are scaffolded under
+`packages/simulation/src/__tests__/integration/`; see the directory README for
+status (waiting on Docker + `@testcontainers/*` install).
 
 ---
 
@@ -525,6 +577,19 @@ The schema also has a nullable `embedding VECTOR(1536)` column on `episodic_memo
 
 ## Roadmap
 
+### In progress (stabilization)
+- [x] Phase 0 — Preflight & branch setup (`914474a4`)
+- [x] Phase 1 — Critical correctness bugs (`f6b1134c`)
+- [x] Phase 2 — Test coverage gaps (`b733759e`)
+- [x] Phase 3 — Concurrency & transactional integrity (`65611ebe`)
+- [x] Phase 4 — Resilience & error handling (`37c6e3b7`)
+- [x] Phase 5 — Frontend robustness (`d5987e23`)
+- [ ] Phase 6 — Security hardening (JWT secret enforcement, refresh tokens, input sanitization, idempotency keys, helmet/CORS)
+- [ ] Phase 7 — Code hygiene & dead code (delete `ClaudeClient.ts`, dedupe `db/` directories, LICENSE/CONTRIBUTING)
+- [ ] Phase 8 — DX (GitHub Actions CI, pnpm migration, Drizzle ORM, strict TypeScript)
+- [ ] Phase 9 — 24-hour soak test + 100-story behavioural sample
+
+### Features (post-stabilization)
 - [ ] Performance optimisation for larger populations (100+ agents)
 - [ ] Multiple concurrent worlds
 - [ ] Rich analytics dashboard (charts, trends, emergent pattern detection)
@@ -534,3 +599,4 @@ The schema also has a nullable `embedding VECTOR(1536)` column on `episodic_memo
 - [x] Fog-of-war observer layer
 - [x] Interactive onboarding wizard for user-authored agents
 - [x] Per-partner memory recall (no more "Hello stranger!" between agents who already bonded)
+- [x] Reachable `romantic_partner` state (and `widowed`, breakup-to-enemy)

@@ -1520,3 +1520,210 @@ The `embedding vector(1536)` column and ivfflat index exist now; nothing populat
 4. The query embedding can be the *current conversation context* (last few turns concatenated) — so an agent looking for memories during a tense moment surfaces past tense memories, not generic top-importance ones.
 
 This turns episodic memory from "bag of high-importance facts" into *associative recall*: the right memory for the right moment.
+
+---
+
+# Appendix — Stabilization Addendum
+
+This appendix documents systems added during the stabilization pass tracked by
+`GENESIS_REMEDIATION_PLAN.md` (local-only). Phases 0–5 are merged to `dev`; the
+canonical per-phase summary lives in `CHANGELOG.md`. Read this for the
+rationale and shape of the new modules; read the changelog for the inventory.
+
+## A1. Observability
+
+### Logger (`packages/simulation/src/observability/logger.ts`)
+
+Pino-backed structured logger. One JSON event per line in production; pretty
+output in development when `LOG_PRETTY=true`. Redacts any field path matching
+`password`, `token`, `api_key`, `apiKey`, or `secret` (top-level or nested).
+
+```ts
+import { engineLogger } from './observability/logger.js';
+const log = engineLogger('AgentEngine');
+log.info({ agentId, tick, day }, 'agent_decision_start');
+log.warn({ err, agentId }, 'llm_parse_failure');
+```
+
+The `engine` field is set automatically. Convention: snake_case event names
+(`agent_died`, `tick_skipped_lock_held`) so they group cleanly in log search.
+
+### Metrics (`observability/metrics.ts`)
+
+Tiny in-process counter registry with label support:
+
+| Counter | Labels |
+|---------|--------|
+| `llmParseFailures` | `type` (decision / conversation / trade) |
+| `llmCallErrors` | `kind` |
+| `llmCircuitOpens` | `provider` |
+| `llmCircuitRejected` | `provider` |
+| `ticksSkipped` | `reason` (lock_held / redis_error), `worldId` |
+
+The surface is intentionally minimal so swapping it for a Prometheus client is
+mechanical.
+
+## A2. Resilience
+
+### Circuit breaker (`llm/breaker.ts`)
+
+opossum-backed breaker around every Anthropic call. Defaults:
+
+| Option | Value |
+|--------|-------|
+| `timeout` | 15s |
+| `errorThresholdPercentage` | 50 |
+| `volumeThreshold` | 5 |
+| `resetTimeout` | 30s |
+| `rollingCountTimeout` | 30s |
+
+Per-provider so a Claude outage doesn't poison an OpenAI fallback.
+`AnthropicClient.safeCompletion` returns `null` on rejection; the typed
+endpoints (`getAgentDecision` etc.) substitute the `SAFE_DEFAULT_*` sentinel
+from `llm/defaults.ts` whose `[parse failure fallback]` marker is identifiable
+in logs and chronicles.
+
+### Tick lock (`world/SimulationLoop.ts`)
+
+`acquireTickLock` / `releaseTickLock` use Redis `SET NX EX` keyed by
+`tick-lock:<worldId>`. The 30s TTL means a crashed process auto-releases.
+`runTickWithLock(redis, worldId, body)` wraps the per-tick body and returns
+`{ executed: false }` when the lock is already held or Redis is unreachable —
+the caller sleeps and tries again at the next interval rather than running
+unlocked.
+
+### Transactions (`db.ts`)
+
+```ts
+await withTransaction(async (tx) => {
+  await tx.execute(sqlA, paramsA);
+  await tx.execute(sqlB, paramsB);
+});
+```
+
+Multi-table operations now atomic:
+- `TradeEngine.executeTrade` — both inventory transfers settle in one tx.
+- `GovernanceEngine.exileMember` — group_members + agent state + member_count.
+- `ConflictEngine.executeRaid` — HP damage + loot + skirmish row + war
+  casualty counters.
+
+LLM calls deliberately stay outside transactions; never hold BEGIN open across
+a 5–10s LLM round trip.
+
+`withAdvisoryLock(key, fn)` pairs `pg_advisory_lock` with `pg_advisory_unlock`
+for cross-process critical sections (world seeding, migration runs).
+
+### Retry helper (`util/retry.ts`)
+
+`retry(fn, { attempts, baseDelayMs, maxDelayMs?, jitter?, onRetry? })`. Used
+by `MemoryDecay` for transient DB blips on its consolidation writes.
+
+## A3. LLM payload validation
+
+`llm/schemas.ts` defines Zod schemas for every typed LLM response. Parsers in
+`AnthropicClient` strip code fences, `JSON.parse`, then `Schema.parse` — no
+regex extract-from-prose fallback. Schema rejection bumps
+`metrics.llmParseFailures` and returns the typed safe default.
+
+The `action` field on the decision schema is intentionally a free string
+(verb-arg form like `"move north"`, `"talk Bob hello"`) rather than an enum.
+`AgentEngine.executeAction` falls through to `idle` for unknown verbs.
+
+## A4. Memory consolidation
+
+`MemoryDecay` is now constructor-injected (`{ db, llm, logger }`) and writes
+each daily consolidation pass to a new `memory.consolidation_runs` table with
+a `(agent_id, day)` UNIQUE constraint. Status transitions
+`pending → success | failed` with an error message column.
+`resumePendingConsolidations` runs once on simulation startup and re-processes
+any rows still `pending` from a prior crash. LLM failures fall back to a
+deterministic `"Vague memories from Day N: M events"` summary instead of
+bubbling up.
+
+## A5. Frontend resilience
+
+### Error boundaries
+
+`react-error-boundary` wraps the whole tree (via `app/app-boundary.tsx` so the
+Server-Component `layout.tsx` can host it) plus each major panel —
+`WorldMap`, `AgentProfile`, `EventFeed`, `CivilisationPanel`. A crash in one
+panel renders `PanelErrorFallback` without taking down the rest of the viewer.
+
+### `useAsyncData` hook + `AsyncStates` primitives
+
+```ts
+const { data, loading, error, isEmpty, refetch } = useAsyncData<Row[]>(
+  (signal) => apiFetch('/foo', { signal }).then(r => r.json()),
+  [worldId],
+  { isEmpty: (rows) => rows.length === 0 },
+);
+
+if (loading) return <LoadingSpinner label="Loading…" />;
+if (error)   return <InlineError error={error} onRetry={refetch} />;
+if (isEmpty) return <EmptyState label="Nothing yet." />;
+```
+
+Receives an `AbortSignal` so a deps change or unmount cancels the in-flight
+fetch rather than racing it. `ChroniclePanel` is the worked reference;
+`packages/web/AUDIT.md` tracks per-component migration progress.
+
+### `apiFetch` timeouts
+
+`apiFetch(path, { timeoutMs?: number })` defaults to 30s, AbortController-bound,
+throws a typed `ApiTimeoutError`. Caller-provided `signal` is wired so
+navigation-away cancellation still propagates.
+
+### WebSocket lifecycle
+
+Client (`useWebSocket.ts`):
+- 30s heartbeat ping. Any incoming message clears the pending-pong timer.
+- 10s pong timeout — if nothing arrives, close with code 4000 and reconnect.
+- Reconnect with exponential backoff `min(2^attempt × 1s, 30s)`.
+- 10 consecutive failures transition `connectionState` to `failed`.
+- Component unmount issues `close(1000, 'component_unmount')` so onclose
+  knows not to reconnect; all timers cleared.
+
+Server (`packages/api/src/index.ts`):
+- Per-connection 30s heartbeat sending `pong`.
+- 45s stale-limit cutoff — closes the socket if the client has been silent.
+- Heartbeat interval cleared on close/error so leaked timers can't outlive
+  their socket.
+
+`connectionState` ('connecting' | 'open' | 'reconnecting' | 'closed' |
+'failed') lives on the Zustand store as the single authoritative source for
+UI banners.
+
+### Batch onboarding
+
+`POST /onboarding/sessions/:id/complete-batch` accepts every answer + identity
+in one shot and forwards to the existing `/complete` handler via
+`app.inject()` (so spawn / trait insert / archetype calculation are reused
+unchanged). Rate-limited to 5/h. The frontend's `lib/onboardingDraft.ts`
+Zustand slice persists answers to `sessionStorage` with a 24h TTL so a
+refresh recovers the draft. Per-question endpoints stay live for backward
+compatibility.
+
+## A6. API rate limiting
+
+`@fastify/rate-limit` registered globally:
+- **Global:** 100 req/min/IP. `/health` and `/ws` allowlisted.
+  Tunable via `API_RATE_LIMIT_GLOBAL_MAX`.
+- `/auth/register`: 5/hour/IP.
+- `/auth/login`: 10/min/IP.
+- `/onboarding/sessions`: 3/hour/user.
+- `/onboarding/sessions/:id/complete-batch`: 5/hour/user.
+
+`skipOnError: true` keeps a Redis blip from taking the API down.
+
+## A7. Migration numbering
+
+`010_partner_memory.sql` was already in flight when the stabilization plan
+landed, so the spec's numbering shifted by one:
+
+| Plan name | Actual file |
+|-----------|-------------|
+| 010 — romantic_candidacy | **011** |
+| 011 — widowed_state | **012** |
+| 012 — consolidation_state | **013** |
+
+The plan's later migrations (refresh_tokens, idempotency) will land as 014+.
