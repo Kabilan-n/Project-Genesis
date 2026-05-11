@@ -74,6 +74,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 6 — completion summary
+- **End-of-Phase-6 simulation unit-test count: 319 passing** across 26 files
+  (+13 from end of Phase 5, all from `sanitize.test.ts`).
+- New `ensureJwtSecret()` boot guard refuses to start in production when
+  `JWT_SECRET` is missing, a known default, or shorter than 32 chars.
+  Dev / test warn instead of exit.
+- New `npm run generate:jwt-secret` script in `@genesis/api` emits a
+  48-byte base64 secret.
+- `@fastify/helmet` registered with default-strict headers
+  (X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security,
+  Referrer-Policy). CSP disabled at the API tier (payloads are JSON).
+- CORS becomes a strict allowlist in production via `ALLOWED_ORIGINS`
+  comma-separated list; refuses to boot if missing. `credentials: true`
+  is on so the refresh cookie rides along.
+- New sanitization helpers (`sanitizeAgentName`, `sanitizeAppearance`)
+  applied at the onboarding boundary. Strict allowlist for names
+  (still passes O'Brien / Anne-Marie); appearance strips Anthropic /
+  Llama / chat-template control tokens. Rejects when >20% of chars
+  were stripped OR any control token was present. Defensive copy in
+  `packages/simulation/src/util/sanitize.ts`.
+- Migration `014_idempotency.sql` + new `plugins/idempotency.ts`
+  Fastify hook: mutating endpoints (POST/PUT/DELETE/PATCH) that
+  carry an `Idempotency-Key` header are scoped by user_id (or IP) +
+  key. Same key + same body replays cached response; same key +
+  different body returns 409.
+- Migration `015_refresh_tokens.sql` + new `auth/refreshTokens.ts`
+  helpers + `POST /auth/refresh` + `POST /auth/logout`. Access tokens
+  now 15 min; refresh tokens 30 days, HttpOnly Secure SameSite=Lax
+  cookie. Rotation on every refresh; revoked-token reuse triggers
+  theft path and revokes every refresh token for the user.
+- `apiFetch` retries 401 once via `/auth/refresh`; concurrent
+  refreshes collapse into one in-flight promise. `credentials: 'include'`
+  on every call.
+- Dependencies added: `@fastify/helmet`, `@fastify/cookie`.
+
 ### Phase 5 — completion summary
 - Web `react-error-boundary` wrapping: app-level boundary in `layout.tsx`
   (via a client `AppBoundary`) and per-panel boundaries on `WorldMap`,
