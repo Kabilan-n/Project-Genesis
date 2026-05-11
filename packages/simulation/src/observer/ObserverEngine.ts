@@ -4,7 +4,7 @@ import { engineLogger } from '../observability/logger.js';
 
 const log = engineLogger('ObserverEngine');
 
-const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5-20251001';
+const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5';
 
 // Take a world snapshot every N ticks
 const SNAPSHOT_INTERVAL_TICKS = 360; // every 6 hours of sim time
