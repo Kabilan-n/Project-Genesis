@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { query, queryOne, execute } from '../db.js';
+import { sanitizeAgentName, sanitizeAppearance } from '../util/sanitize.js';
 
 // 12 soul questions with trait modifiers per answer
 const SOUL_QUESTIONS = [
@@ -248,9 +249,26 @@ export async function onboardingRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Name must be at least 2 characters' });
     }
 
+    // Sanitize at the boundary — name + appearance flow into LLM prompts.
+    const nameResult = sanitizeAgentName(name);
+    if (nameResult.rejected) {
+      return reply.code(400).send({ error: nameResult.reason });
+    }
+    // appearance is a record; the user-controlled string is a `description`
+    // field if present. Other fields (colour, archetype) are server-derived.
+    const description = typeof appearance.description === 'string' ? appearance.description : '';
+    let cleanedAppearance = appearance;
+    if (description) {
+      const descResult = sanitizeAppearance(description);
+      if (descResult.rejected) {
+        return reply.code(400).send({ error: descResult.reason });
+      }
+      cleanedAppearance = { ...appearance, description: descResult.value };
+    }
+
     await execute(
       `UPDATE auth.onboarding_sessions SET name = $1, appearance = $2 WHERE session_id = $3`,
-      [name.trim(), JSON.stringify(appearance), id]
+      [nameResult.value, JSON.stringify(cleanedAppearance), id]
     );
 
     return { ok: true };
@@ -405,6 +423,22 @@ export async function onboardingRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Name must be at least 2 characters' });
     }
 
+    // Sanitize name + appearance.description at the boundary.
+    const nameResult = sanitizeAgentName(name);
+    if (nameResult.rejected) {
+      return reply.code(400).send({ error: nameResult.reason });
+    }
+    const cleanName = nameResult.value;
+    const description = typeof appearance?.description === 'string' ? appearance.description : '';
+    let cleanAppearance = appearance ?? {};
+    if (description) {
+      const descResult = sanitizeAppearance(description);
+      if (descResult.rejected) {
+        return reply.code(400).send({ error: descResult.reason });
+      }
+      cleanAppearance = { ...cleanAppearance, description: descResult.value };
+    }
+
     // Fold every answer into accumulated traits (mirrors per-question logic).
     const traits: Record<string, number> = {};
     for (const a of answers) {
@@ -430,8 +464,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       [
         JSON.stringify(answers),
         JSON.stringify(traits),
-        name.trim(),
-        JSON.stringify(appearance ?? {}),
+        cleanName,
+        JSON.stringify(cleanAppearance),
         id,
       ],
     );

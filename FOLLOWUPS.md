@@ -29,9 +29,10 @@ resolved it; do not delete the entry.
   `openness` column, or (c) average curiosity + creativity.
 - **Phase 1.2 — migration numbering shifted by 1.** Plan reserves 010 for
   romantic candidacy and 011 for widowed state, but `010_partner_memory.sql`
-  was already in flight (committed `3900abe7`). New migrations land as
-  `011_romantic_candidacy.sql` and `012_widowed_state.sql`; downstream Phase 1
-  migrations (consolidation_state, refresh_tokens, idempotency) shift up by 1.
+  was already in flight (committed `3900abe7`). Final mapping after Phase 6:
+  011 = romantic_candidacy (1.2), 012 = widowed_state (1.2),
+  013 = consolidation_state (1.3), 014 = idempotency (6.4),
+  015 = refresh_tokens (6.2).
 
 ## Deferred Improvements
 
@@ -96,3 +97,19 @@ resolved it; do not delete the entry.
   question. Replace those handlers with `useOnboardingDraft.setAnswer`
   and submit via `useOnboardingDraft.submit()` on the final step.
   Per-question endpoints stay live for backward compat.
+- **Phase 6 / Task 6.4 — idempotency record cleanup not yet scheduled.**
+  `auth.idempotency_records` rows older than 24h are overwritten naturally
+  on key reuse, but unused keys accumulate. Add a daily DELETE pass when
+  Phase 8 wires the simulation loop's daily callbacks, or rely on a
+  Postgres cron / table-pruning extension. Index `idx_idempotency_cleanup`
+  is in place for the eventual sweep.
+- **Phase 6 — security headers verification not run.** Plan's 6.5 acceptance
+  asks for an A-or-better rating from securityheaders.com. The helmet
+  defaults applied should clear that bar, but the actual run requires a
+  publicly-reachable deployment; revisit during Phase 9's soak test.
+- **Phase 6 — refresh-token client UX on `failed` auth.** apiFetch silently
+  clears the auth store on a refresh-rejected 401. The UI doesn't yet route
+  to /login automatically when that happens — currently the next render
+  just sees `token = null`. Wire a global watcher (Zustand subscribe) in
+  layout.tsx that pushes to /login when the token flips to null inside the
+  /viewer subtree.
