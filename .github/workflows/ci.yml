@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# Cancel older runs on the same ref so a fresh push doesn't queue behind
+# the previous one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    name: lint + typecheck + test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check simulation
+        run: npx tsc --noEmit
+        working-directory: packages/simulation
+
+      - name: Type-check api
+        run: npx tsc --noEmit
+        working-directory: packages/api
+
+      - name: Type-check web
+        run: npx tsc --noEmit
+        working-directory: packages/web
+
+      - name: Unit tests
+        run: npm test
+        working-directory: packages/simulation
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    # Only run on PRs against dev — saves CI minutes on every push.
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run coverage
+        run: npm run test:coverage
+        working-directory: packages/simulation
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: packages/simulation/coverage/
+          retention-days: 14

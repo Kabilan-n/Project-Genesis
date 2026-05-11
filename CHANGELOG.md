@@ -74,6 +74,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 8 — completion summary
+- New `.github/workflows/ci.yml`: lint + typecheck (simulation / api / web)
+  + unit tests on every push and PR to `main` or `dev`; coverage job on
+  PRs to `dev` only. Coverage thresholds in `vitest.config.ts`
+  (70/70/60/70) gate merge; report uploaded as a build artifact.
+- New `packages/simulation/src/util/worldId.ts` resolves the active
+  `WORLD_ID` in priority order: env → `.genesis-world-id` file →
+  empty. `npm run db:seed` writes the worldId to that file (gitignored).
+  Both `simulation/index.ts` and the `/config` endpoint read through the
+  fallback chain so a fresh install doesn't need a copy/paste edit.
+- TypeScript flags `noImplicitOverride` and `noFallthroughCasesInSwitch`
+  enabled in `@genesis/simulation` and `@genesis/api`. Both packages
+  type-check cleanly. `noUncheckedIndexedAccess` and
+  `exactOptionalPropertyTypes` deferred — see `FOLLOWUPS.md`.
+- Task 8.2 (pnpm migration) and 8.3 (Drizzle ORM) deferred — both are
+  multi-day disruptive migrations with no immediate pain. Logged in
+  `FOLLOWUPS.md`.
+- 319 simulation tests still passing.
+
 ### Phase 7 — completion summary
 - Deleted deprecated `packages/simulation/src/llm/ClaudeClient.ts`;
   `MIGRATION_GUIDE.md` updated to reference the factory + provider
