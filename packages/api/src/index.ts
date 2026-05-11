@@ -9,6 +9,7 @@ import rateLimit from '@fastify/rate-limit';
 import Redis from 'ioredis';
 import { authRoutes } from './routes/auth.js';
 import { onboardingRoutes } from './routes/onboarding.js';
+import { idempotencyPlugin } from './plugins/idempotency.js';
 import { worldRoutes } from './routes/worlds.js';
 import { agentRoutes } from './routes/agents.js';
 import { socialRoutes } from './routes/social.js';
@@ -124,6 +125,10 @@ async function start() {
       reply.send(err);
     }
   });
+
+  // Idempotency: intercept mutating requests carrying Idempotency-Key.
+  // Registered AFTER auth so req.user is populated when the hook runs.
+  await app.register(idempotencyPlugin);
 
   // Routes
   await app.register(authRoutes);
