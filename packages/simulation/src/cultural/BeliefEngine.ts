@@ -4,7 +4,7 @@ import type {
   Agent, BeliefSystem, AgentBelief, Myth, AgentMyth, Ritual, SacredSite,
 } from '../types.js';
 
-const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5-20251001';
+const MODEL = process.env.LLM_MODEL ?? 'claude-haiku-4-5';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const BELIEF_COLOURS = [

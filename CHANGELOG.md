@@ -74,6 +74,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 7 — completion summary
+- Deleted deprecated `packages/simulation/src/llm/ClaudeClient.ts`;
+  `MIGRATION_GUIDE.md` updated to reference the factory + provider
+  abstraction. Companion test file already renamed in stabilization 1.4.
+- Audited `db/` layout: only root `db/` exists (with `migrate.js` and 15
+  migrations). No duplicate to resolve. Two stale FOLLOWUPS entries closed
+  in the same pass (the root `package.json` is workspace-only with
+  `db:migrate` / `db:seed` scripts; the simulation `package.json` is its
+  own `@genesis/simulation` thing).
+- Moved `Project_Genesis_Design_Document.pdf` into `docs/archive/` with a
+  README pointing at `docs/PROJECT_GENESIS_DOCS.md` as the current spec.
+- Switched LLM model default from the dated `claude-haiku-4-5-20251001`
+  to the alias `claude-haiku-4-5` so patch updates roll in automatically.
+  `LLMFactory.fromEnv` warns when a dated identifier is configured. Same
+  fallback updated in `ChronicleEngine`, `BeliefEngine`, `ObserverEngine`,
+  and `.env.example`. `.env.example` also documents `ALLOWED_ORIGINS`,
+  the JWT secret floor, and the generator script.
+- Task 7.3 (LICENSE / CONTRIBUTING / CODE_OF_CONDUCT / issue templates)
+  deferred — paperwork that doesn't affect runtime; logged in
+  `FOLLOWUPS.md` alongside Phase 8.1.
+- Task 7.6 (start.sh): no action — script is already documented in
+  README quick-start and performs platform-specific setup beyond
+  `npm run dev` (Docker checks, Node path discovery, migrations).
+- 319 simulation tests still passing.
+
 ### Phase 6 — completion summary
 - **End-of-Phase-6 simulation unit-test count: 319 passing** across 26 files
   (+13 from end of Phase 5, all from `sanitize.test.ts`).

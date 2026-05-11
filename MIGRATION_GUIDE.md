@@ -100,10 +100,13 @@ packages/simulation/src/llm/
 - `src/social/ConversationEngine.ts`
 - `src/social/TradeEngine.ts`
 - `src/social/MemoryDecay.ts`
-- `src/__tests__/ClaudeClient.test.ts`
+- `src/__tests__/AnthropicClient.test.ts` (renamed from `ClaudeClient.test.ts` in stabilization 1.4)
 
-### Deprecated (Still works, not removed)
-- `src/llm/ClaudeClient.ts` — Replaced by `AnthropicClient.ts` but kept for reference
+### Removed in stabilization 7.1
+- `src/llm/ClaudeClient.ts` — fully replaced by `AnthropicClient.ts` and deleted.
+  The factory + provider abstraction has been the only path since Phase 1 of
+  the original migration; nothing in the active codebase imports the legacy
+  class.
 
 ## Compatibility
 
