@@ -120,3 +120,23 @@ resolved it; do not delete the entry.
   rather than inlining — avoids triggering content filters with the
   Covenant's explicit examples), PR template, and three issue templates
   (bug / feature / question) all in place.
+- **Phase 8 / Task 8.2 — pnpm migration deferred.** Disruptive workspace
+  reshuffle: regenerate `pnpm-workspace.yaml`, run `pnpm import` to
+  convert `package-lock.json` to `pnpm-lock.yaml`, delete the npm lock,
+  update CI to use pnpm, rewrite README install instructions. Pick this
+  up when CI proves the npm path is consistently flaky, or alongside a
+  dependency audit; no immediate pain today.
+- **Phase 8 / Task 8.3 — Drizzle ORM migration deferred.** Long migration
+  per the plan itself ("aim for engines first"). Requires defining schema
+  for every existing table, generating migrations matching the current
+  001–015 SQL files, then gradually rewriting `db.execute(sql, params)`
+  callsites to the Drizzle query builder. Multi-week scope; the existing
+  flat SQL works fine and `withTransaction` already gives us atomic
+  multi-table writes. Defer until type-safe queries become a felt need.
+- **Phase 8 / Task 8.5 — only the safe strict flags enabled.**
+  `noImplicitOverride` and `noFallthroughCasesInSwitch` are on across
+  `@genesis/simulation` and `@genesis/api`. `noUncheckedIndexedAccess`
+  surfaces 43 type errors (mostly `array[i]` accesses in engines that
+  the runtime already guards). `exactOptionalPropertyTypes` likely
+  similar volume. Enable + fix in a follow-up pass; defensive runtime
+  guards already prevent the issues these flags would catch.

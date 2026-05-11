@@ -25,12 +25,14 @@ import { ObserverEngine } from './observer/ObserverEngine.js';
 import { getPool } from './db.js';
 
 const TICK_INTERVAL = parseInt(process.env.SIMULATION_TICK_INTERVAL_MS ?? '5000');
-const WORLD_ID = process.env.WORLD_ID ?? '';
 const log = engineLogger('Simulation');
 
 async function main() {
+  // Late-bind so test imports don't trigger the unset-WORLD_ID exit.
+  const { resolveWorldId } = await import('./util/worldId.js');
+  const WORLD_ID = resolveWorldId();
   if (!WORLD_ID) {
-    log.fatal('worldId_env_missing');
+    log.fatal('worldId_unset');
     process.exit(1);
   }
 

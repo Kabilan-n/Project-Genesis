@@ -153,7 +153,23 @@ async function seed() {
 
     await client.query('COMMIT');
     console.log(`\n[Seed] ✓ World ready! WORLD_ID=${worldId}`);
-    console.log(`[Seed] Set in your .env: WORLD_ID=${worldId}`);
+
+    // Write the world id to .genesis-world-id at the repo root. The
+    // simulation env loader and /config endpoint fall back to this
+    // file when WORLD_ID isn't set, so the operator doesn't have to
+    // copy/paste it into .env on a fresh install. The file is
+    // gitignored.
+    try {
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      // packages/simulation/src → repo root is ../../..
+      const target = join(__dirname, '..', '..', '..', '.genesis-world-id');
+      writeFileSync(target, worldId + '\n', 'utf8');
+      console.log(`[Seed] Wrote ${target}`);
+    } catch (err) {
+      console.warn('[Seed] Could not write .genesis-world-id:', err);
+      console.log(`[Seed] Set in your .env manually: WORLD_ID=${worldId}`);
+    }
 
   } catch (err) {
     await client.query('ROLLBACK');

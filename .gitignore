@@ -14,3 +14,6 @@ dist/
 
 # Stabilization plan (local, not tracked)
 GENESIS_REMEDIATION_PLAN.md
+
+# WORLD_ID autoconfig (written by `npm run db:seed`, per Task 8.4)
+.genesis-world-id
