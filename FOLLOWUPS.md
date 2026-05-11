@@ -9,15 +9,16 @@ resolved it; do not delete the entry.
 
 ## Discovered Bugs
 
-- **Plan references missing npm scripts.** `GENESIS_REMEDIATION_PLAN.md` Task 0.2
-  asks for `npm run db:migrate && npm run db:seed`, but `package.json` only
-  defines `seed` (no `db:migrate`, no `db:seed`). Resolve when Phase 8 (DX) /
-  Phase 7 (hygiene) adds proper migration tooling, or sooner if a Phase 1
-  migration needs to run.
-- **Root `package.json` duplicates `packages/simulation/package.json`.** The
-  root file declares `"name": "@genesis/simulation"` and the same scripts —
-  there's no workspace orchestration at the root. Likely the result of a copy.
-  Phase 8 task 8.2 (pnpm migration) is the natural place to fix this.
+- ~~Plan references missing npm scripts.~~ **Resolved (Phase 7 audit, 2026-05-03):**
+  the root `package.json` does define `db:migrate` (runs `db/migrate.js`)
+  and `db:seed` (runs `packages/simulation/src/seed.ts` via tsx). The
+  original Phase 0 observation looked at `packages/simulation/package.json`
+  only, which scopes to package-local scripts.
+- ~~Root `package.json` duplicates `packages/simulation/package.json`.~~
+  **Resolved (Phase 7 audit, 2026-05-03):** they're now distinct — root is
+  `project-genesis` with workspaces + db scripts; the simulation file is
+  `@genesis/simulation` with its build/test scripts. Whatever copied-paste
+  duplication existed at baseline-capture time is no longer present.
 
 ## Open Questions
 
