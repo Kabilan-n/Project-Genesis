@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config({ path: '../../.env' });
 import Fastify from 'fastify';
+import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
@@ -101,6 +102,11 @@ async function start() {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   });
+
+  // Cookies are needed for the refresh-token (HttpOnly Secure cookie).
+  // Plain register — we sign/verify cookies ourselves via the refresh-
+  // token table, no secret needed for parsing.
+  await app.register(cookie);
 
   await app.register(jwt, { secret: jwtSecret });
   await app.register(websocket);

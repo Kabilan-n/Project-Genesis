@@ -45,16 +45,44 @@ export class ApiTimeoutError extends Error {
 }
 
 /**
- * Authenticated fetch with a default 30s timeout via AbortController.
- * Pass `timeoutMs` to override (slow endpoints like biography generation
- * should pass a longer value). Pass an external `signal` and we'll wire
- * both signals together so user-cancellation still works.
+ * Refresh the access token using the HttpOnly refresh cookie.
+ * Concurrent calls collapse to a single in-flight request.
  */
-export async function apiFetch(
+let refreshPromise: Promise<string | null> | null = null;
+async function refreshAccessToken(): Promise<string | null> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include', // send the refresh cookie
+      });
+      if (!res.ok) {
+        useAuthStore.getState().clearAuth();
+        return null;
+      }
+      const body = await res.json();
+      if (body?.token && body?.user) {
+        useAuthStore.getState().setAuth(body.token, body.user);
+        return body.token as string;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      // Clear the singleton AFTER the response so the next 401 picks up
+      // the newly-stored token rather than racing.
+      setTimeout(() => { refreshPromise = null; }, 0);
+    }
+  })();
+  return refreshPromise;
+}
+
+async function fetchOnce(
   path: string,
-  init: RequestInit & { timeoutMs?: number } = {},
+  init: RequestInit & { timeoutMs?: number },
+  token: string | null,
 ): Promise<Response> {
-  const token = useAuthStore.getState().token;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((init.headers as Record<string, string>) ?? {}),
@@ -65,25 +93,20 @@ export async function apiFetch(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  // If the caller passed their own signal, abort our controller when
-  // theirs aborts (so navigation-away cancellation propagates).
   if (init.signal) {
-    if (init.signal.aborted) {
-      controller.abort();
-    } else {
-      init.signal.addEventListener('abort', () => controller.abort(), { once: true });
-    }
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
   try {
     return await fetch(`${getApiUrl()}${path}`, {
       ...init,
       headers,
+      credentials: 'include', // send the refresh cookie alongside Bearer
       signal: controller.signal,
     });
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      // Distinguish our timeout from a user-driven abort.
       if (!init.signal?.aborted) {
         throw new ApiTimeoutError(path, timeoutMs);
       }
@@ -92,4 +115,32 @@ export async function apiFetch(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Authenticated fetch with a default 30s timeout via AbortController.
+ * Pass `timeoutMs` to override (slow endpoints like biography generation
+ * should pass a longer value). Pass an external `signal` and we'll wire
+ * both signals together so user-cancellation still works.
+ *
+ * On a 401 response we transparently try to refresh the access token via
+ * the cookie-borne refresh token and replay the request once. On refresh
+ * failure the auth store is cleared and the 401 propagates.
+ */
+export async function apiFetch(
+  path: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  let token = useAuthStore.getState().token;
+  let res = await fetchOnce(path, init, token);
+
+  // Don't try to refresh on /auth/refresh itself or /auth/logout — those
+  // calls drive the refresh flow themselves.
+  if (res.status === 401 && !path.startsWith('/auth/refresh') && !path.startsWith('/auth/logout')) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await fetchOnce(path, init, newToken);
+    }
+  }
+  return res;
 }
