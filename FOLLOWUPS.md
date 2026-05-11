@@ -114,10 +114,9 @@ resolved it; do not delete the entry.
   just sees `token = null`. Wire a global watcher (Zustand subscribe) in
   layout.tsx that pushes to /login when the token flips to null inside the
   /viewer subtree.
-- **Phase 7 / Task 7.3 — community files deferred.** Not landed in this
-  pass: `LICENSE` (MIT, Kabilan N), `CONTRIBUTING.md` (branch naming, PR
-  process, testing bar), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1),
-  `.github/ISSUE_TEMPLATE/` (bug + feature + question), and
-  `.github/PULL_REQUEST_TEMPLATE.md`. Pure paperwork that doesn't affect
-  runtime; pick up alongside Phase 8.1 when the GitHub Actions CI workflow
-  needs them anyway.
+- ~~Phase 7 / Task 7.3 — community files deferred.~~ **Resolved on its own
+  branch (`stabilization/phase-7-3-community`):** LICENSE (MIT),
+  CONTRIBUTING.md, CODE_OF_CONDUCT.md (links to Contributor Covenant 2.1
+  rather than inlining — avoids triggering content filters with the
+  Covenant's explicit examples), PR template, and three issue templates
+  (bug / feature / question) all in place.
