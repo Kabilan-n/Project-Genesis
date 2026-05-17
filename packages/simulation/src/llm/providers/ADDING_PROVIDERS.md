@@ -1,63 +1,105 @@
 # Adding a New LLM Provider
 
-This guide explains how to add support for a new LLM provider (e.g., Groq, Together, Replicate, etc.).
+Step-by-step guide for adding a new provider (Groq, Together, Replicate,
+local fine-tunes, etc.). Reflects the post-stabilization shape: shared
+Zod parsing, circuit breaker, structured logging, no regex fallback.
 
-## Step 1: Implement the `LLMClient` Interface
+## What you get for free
 
-Create a new file: `src/llm/providers/YourProviderClient.ts`
+The framework already provides four shared modules — your provider only
+implements the API call:
+
+| Module | What it does |
+|--------|--------------|
+| `llm/schemas.ts` | Zod schemas for decision / conversation / trade responses |
+| `llm/defaults.ts` | `SAFE_DEFAULT_*` sentinels returned on parse / call failure |
+| `llm/parsing.ts` | `parseDecision`, `parseConversationTurn`, `parseTradeResponse` — strip code fences → JSON.parse → schema validate → metric on failure → safe default |
+| `llm/breaker.ts` | `BREAKER_OPTIONS` (15s timeout, 50% error threshold, 30s reset) + `attachBreakerEvents` to wire it into metrics |
+
+`OpenAIClient`, `OllamaClient`, `HuggingFaceClient`, and `AnthropicClient`
+all follow the same template; copy the closest one as a starting point.
+
+## Step 1: Implement the client
+
+Create `src/llm/providers/YourProviderClient.ts`:
 
 ```typescript
+import CircuitBreaker from 'opossum';
 import type { AgentDecision } from '../../types.js';
 import type { TradeResponse } from '../../social/TradeEngine.js';
 import type { LLMClient, ConversationTurnResponse } from '../types.js';
+import {
+  parseDecision, parseConversationTurn, parseTradeResponse,
+} from '../parsing.js';
+import {
+  SAFE_DEFAULT_DECISION, SAFE_DEFAULT_CONVERSATION_TURN, SAFE_DEFAULT_TRADE_RESPONSE,
+} from '../defaults.js';
+import { metrics } from '../../observability/metrics.js';
+import { BREAKER_OPTIONS, attachBreakerEvents } from '../breaker.js';
+
+const PROVIDER = 'your-provider';
+
+type CompletionFn = (args: { prompt: string; maxTokens: number }) => Promise<string>;
 
 export class YourProviderClient implements LLMClient {
-  constructor(private model: string, private apiKey?: string) {}
+  private completionBreaker: CircuitBreaker<Parameters<CompletionFn>, string>;
+
+  constructor(private model: string, private apiKey?: string) {
+    const completion: CompletionFn = ({ prompt, maxTokens }) => this.call(prompt, maxTokens);
+    this.completionBreaker = new CircuitBreaker(completion, BREAKER_OPTIONS);
+    attachBreakerEvents(this.completionBreaker, { label: PROVIDER });
+  }
+
+  private async safeCompletion(prompt: string, maxTokens: number): Promise<string | null> {
+    try { return await this.completionBreaker.fire({ prompt, maxTokens }); }
+    catch { return null; }
+  }
 
   async getAgentDecision(prompt: string): Promise<AgentDecision> {
-    try {
-      const text = await this.call(prompt, 300);
-      return this.parseDecision(text);
-    } catch (err) {
-      console.error('[YourProviderClient] Error:', err);
-      return { thought: 'I feel confused.', action: 'do_nothing' };
+    const text = await this.safeCompletion(prompt, 300);
+    if (text === null) {
+      metrics.llmCallErrors.inc({ kind: 'decision', provider: PROVIDER });
+      return SAFE_DEFAULT_DECISION;
     }
+    return parseDecision(text, PROVIDER);
   }
 
   async getConversationResponse(prompt: string): Promise<ConversationTurnResponse> {
-    try {
-      const text = await this.call(prompt, 250);
-      return this.parseConversationTurn(text);
-    } catch (err) {
-      console.error('[YourProviderClient] Error:', err);
-      return { thought: 'I am unsure how to respond.', speech: '...', is_ending: true };
+    const text = await this.safeCompletion(prompt, 250);
+    if (text === null) {
+      metrics.llmCallErrors.inc({ kind: 'conversation', provider: PROVIDER });
+      return SAFE_DEFAULT_CONVERSATION_TURN;
     }
+    return parseConversationTurn(text, PROVIDER);
   }
 
   async getTradeResponse(prompt: string): Promise<TradeResponse> {
-    try {
-      const text = await this.call(prompt, 250);
-      return this.parseTradeResponse(text);
-    } catch (err) {
-      console.error('[YourProviderClient] Error:', err);
-      return { decision: 'reject', thought: 'Something feels off.', reason: 'Uncertain' };
+    const text = await this.safeCompletion(prompt, 250);
+    if (text === null) {
+      metrics.llmCallErrors.inc({ kind: 'trade', provider: PROVIDER });
+      return SAFE_DEFAULT_TRADE_RESPONSE;
     }
+    return parseTradeResponse(text, PROVIDER);
   }
 
+  /**
+   * Raw completion deliberately bypasses the breaker — its callers
+   * (MemoryDecay.consolidateBatch) already have retry + deterministic
+   * fallback. Double-counting failures here would trip the breaker
+   * prematurely.
+   */
   async getRawCompletion(prompt: string, maxTokens = 100): Promise<string> {
     return this.call(prompt, maxTokens);
   }
 
-  // ── Private API Call ────────────────────────────────────────────
+  // ── The only provider-specific bit ──────────────────────────────────
 
   private async call(prompt: string, maxTokens: number): Promise<string> {
-    // Implement your API call here
-    // Example using fetch:
-    const response = await fetch('https://api.yourprovider.com/v1/chat/completions', {
+    const response = await fetch('https://api.your-provider.com/v1/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify({
         model: this.model,
@@ -67,92 +109,16 @@ export class YourProviderClient implements LLMClient {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      throw new Error(`YourProvider API error: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json() as any;
-    // Extract text from response (adjust based on API format)
-    return data.choices[0]?.message?.content || '';
-  }
-
-  // ── Parsers (copy from AnthropicClient) ────────────────────────
-
-  private parseDecision(text: string): AgentDecision {
-    const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
-    try {
-      const parsed = JSON.parse(cleaned);
-      if (typeof parsed.thought === 'string' && typeof parsed.action === 'string') {
-        return {
-          thought: parsed.thought,
-          action: parsed.action,
-          speech: typeof parsed.speech === 'string' ? parsed.speech : undefined,
-          target: typeof parsed.target === 'string' ? parsed.target : undefined,
-          trade_offer: parsed.trade_offer ?? undefined,
-          gossip_subject: typeof parsed.gossip_subject === 'string' ? parsed.gossip_subject : undefined,
-          gossip_claim: typeof parsed.gossip_claim === 'string' ? parsed.gossip_claim as any : undefined,
-          group_name: typeof parsed.group_name === 'string' ? parsed.group_name : undefined,
-          group_purpose: typeof parsed.group_purpose === 'string' ? parsed.group_purpose : undefined,
-        };
-      }
-    } catch {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        try { return JSON.parse(match[0]); } catch { /* fall through */ }
-      }
-    }
-    return { thought: 'I am not sure what to do.', action: 'do_nothing' };
-  }
-
-  private parseConversationTurn(text: string): ConversationTurnResponse {
-    const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
-    try {
-      const parsed = JSON.parse(cleaned);
-      return {
-        thought:    typeof parsed.thought    === 'string'  ? parsed.thought    : 'thinking...',
-        speech:     typeof parsed.speech     === 'string'  ? parsed.speech     : '...',
-        is_ending:  typeof parsed.is_ending  === 'boolean' ? parsed.is_ending  : false,
-      };
-    } catch {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          const p = JSON.parse(match[0]);
-          return {
-            thought:   p.thought   ?? 'thinking...',
-            speech:    p.speech    ?? text.slice(0, 150),
-            is_ending: p.is_ending ?? false,
-          };
-        } catch { /* fall through */ }
-      }
-    }
-    return { thought: 'Unsure.', speech: text.slice(0, 150).trim(), is_ending: true };
-  }
-
-  private parseTradeResponse(text: string): TradeResponse {
-    const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
-    try {
-      const parsed = JSON.parse(cleaned);
-      const decision = ['accept', 'reject', 'counter'].includes(parsed.decision)
-        ? parsed.decision as TradeResponse['decision']
-        : 'reject';
-      return {
-        decision,
-        thought: parsed.thought ?? 'Considering the offer...',
-        counter_offer: parsed.counter_offer ?? undefined,
-        reason: parsed.reason ?? undefined,
-      };
-    } catch {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        try { return JSON.parse(match[0]); } catch { /* fall through */ }
-      }
-    }
-    return { decision: 'reject', thought: 'Something felt off.', reason: 'Unclear offer' };
+    return data.choices[0]?.message?.content ?? '';
   }
 }
 ```
 
-## Step 2: Update the Factory
+## Step 2: Wire into `LLMFactory`
 
 Edit `src/llm/LLMFactory.ts`:
 
@@ -161,183 +127,64 @@ import { YourProviderClient } from './providers/YourProviderClient.js';
 
 export type LLMProvider = 'anthropic' | 'openai' | 'ollama' | 'huggingface' | 'your-provider';
 
-export class LLMFactory {
-  static createClient(config: LLMConfig): LLMClient {
-    // ... existing cases ...
+// In createClient(config):
+case 'your-provider':
+  return new YourProviderClient(config.model, config.apiKey);
 
-    case 'your-provider':
-      return new YourProviderClient(
-        config.model,
-        config.apiKey || process.env.YOUR_PROVIDER_API_KEY
-      );
-
-    // ... rest of switch ...
-  }
-
-  static fromEnv(): LLMClient {
-    // ... existing code ...
-
-    switch (provider) {
-      // ... existing cases ...
-      case 'your-provider':
-        config.apiKey = process.env.YOUR_PROVIDER_API_KEY;
-        break;
-    }
-
-    // ... rest of method ...
-  }
-}
+// In fromEnv():
+case 'your-provider':
+  config.apiKey = process.env.YOUR_PROVIDER_API_KEY;
+  break;
 ```
 
-## Step 3: Update Environment Configuration
+## Step 3: Environment config
 
-Update `.env` and `.env.example`:
-
-```env
-# LLM Provider & Model Configuration
-LLM_PROVIDER=your-provider
-LLM_MODEL=your-model-name
-YOUR_PROVIDER_API_KEY=api_key_here
-```
-
-## Step 4: Documentation
-
-Update the main `README.md` in this directory:
-
-```markdown
-### 5. **Your Provider**
-Best for: [Description]
+Add to `.env.example`:
 
 ```env
 LLM_PROVIDER=your-provider
 LLM_MODEL=your-model-name
-YOUR_PROVIDER_API_KEY=...
+YOUR_PROVIDER_API_KEY=
 ```
 
-**Common models:**
-- `model1` — Description
-- `model2` — Description
+## Step 4: Optional SDK
 
-[Get API key](https://yourprovider.com/keys)
-```
-
-## Step 5: Optional - Handle External Dependencies
-
-If your provider requires an external SDK that might not be installed:
+If your provider has a TypeScript SDK that you don't want as a hard
+dependency (so users only install it if they pick this provider), use
+the `require` pattern from `OpenAIClient`:
 
 ```typescript
-export class YourProviderClient implements LLMClient {
-  private client: any;
-
-  constructor(private model: string, apiKey?: string) {
-    let YourSDK: any;
-    try {
-      // eslint-disable-next-line global-require
-      YourSDK = require('your-sdk').default;
-    } catch {
-      throw new Error(
-        'Your SDK not installed. To use YourProvider, run: npm install your-sdk'
-      );
-    }
-
-    this.client = new YourSDK({ apiKey });
-  }
-
-  // ... rest of implementation ...
+let YourSDK: any;
+try { YourSDK = require('your-sdk').default; }
+catch {
+  throw new Error('Your SDK not installed. Run: npm install your-sdk');
 }
-```
-
-## Step 6: Test It
-
-1. Set environment variables in `.env`
-2. Run the simulation:
-   ```bash
-   npm run start
-   ```
-3. Verify logs show your provider is being used
-
-## Example: Adding Groq Provider
-
-```typescript
-// src/llm/providers/GroqClient.ts
-import type { LLMClient, ConversationTurnResponse } from '../types.js';
-
-export class GroqClient implements LLMClient {
-  private client: any;
-
-  constructor(private model: string, apiKey?: string) {
-    // Groq SDK or just use fetch
-    this.client = {
-      apiKey: apiKey || process.env.GROQ_API_KEY,
-    };
-  }
-
-  private async call(prompt: string, maxTokens: number): Promise<string> {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.client.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: maxTokens,
-      }),
-    });
-
-    const data = await response.json() as any;
-    return data.choices[0]?.message?.content || '';
-  }
-
-  // ... implement all 4 methods using this.call() ...
-}
+this.client = new YourSDK({ apiKey });
 ```
 
 ## Tips
 
-1. **Reuse the parsers**: All providers should use the same response parsers (they're provider-agnostic)
-2. **Error handling**: Always catch API errors and return sensible defaults
-3. **Token limits**: Respect `maxTokens` parameter for consistency
-4. **Testing**: Add a test file to verify the parsers work with your provider's response format
-5. **Async operations**: Use `async/await` consistently
-6. **Environment variables**: Use uppercase names like `YOUR_PROVIDER_API_KEY`
+1. **Never bypass the parser.** Always go through `parseDecision` etc.
+   — they handle code fences, schema validation, metrics, and safe
+   defaults uniformly across providers.
+2. **Don't add ad-hoc field extraction.** If the LLM's output doesn't
+   match the schema, that's a signal for the operator (via the
+   `llm_parse_failure` log + `llmParseFailures` metric), not a fixup
+   target.
+3. **Provider label matters.** Pass `PROVIDER` to every metric inc and
+   every parser call. The /metrics endpoint slices by provider so you
+   can tell which one is misbehaving.
+4. **Keep `getRawCompletion` raw.** No breaker, no parser. Callers handle
+   their own retries.
 
-## Common API Patterns
+## Reference implementations
 
-### OpenAI-Compatible (Groq, Together, Replicate)
-```typescript
-const response = await fetch(baseUrl + '/chat/completions', {
-  body: JSON.stringify({
-    model,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-  }),
-});
-const data = await response.json();
-return data.choices[0].message.content;
-```
+| File | Style | Notes |
+|------|-------|-------|
+| `AnthropicClient.ts` | SDK | Anthropic SDK, hardcoded as default |
+| `OpenAIClient.ts` | SDK with optional require | Lazy SDK load |
+| `OllamaClient.ts` | Raw fetch | Local-hosted, no auth |
+| `HuggingFaceClient.ts` | Raw fetch | Inference API |
 
-### Completion Endpoint (Legacy)
-```typescript
-const response = await fetch(baseUrl + '/completions', {
-  body: JSON.stringify({
-    model,
-    prompt,
-    max_tokens: maxTokens,
-  }),
-});
-const data = await response.json();
-return data.choices[0].text;
-```
-
-### Inference API (HuggingFace style)
-```typescript
-const response = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
-  body: JSON.stringify({ inputs: prompt }),
-});
-const data = await response.json();
-return data[0].generated_text;
-```
-
-Good luck adding your provider! 🎉
+Copy whichever shape matches your provider, replace the `call` method,
+update the `PROVIDER` constant.
