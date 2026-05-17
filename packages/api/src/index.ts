@@ -16,6 +16,7 @@ import { agentRoutes } from './routes/agents.js';
 import { socialRoutes } from './routes/social.js';
 import { civilisationRoutes } from './routes/civilisation.js';
 import { settingsRoutes } from './routes/settings.js';
+import { metricsRoutes } from './routes/metrics.js';
 
 const PORT = parseInt(process.env.API_PORT ?? '3001');
 
@@ -120,7 +121,10 @@ async function start() {
     max: parseInt(process.env.API_RATE_LIMIT_GLOBAL_MAX ?? '100'),
     timeWindow: '1 minute',
     skipOnError: true, // never let a Redis blip take the whole API down
-    allowList: (req) => req.url === '/health' || req.url.startsWith('/ws'),
+    allowList: (req) =>
+      req.url === '/health' ||
+      req.url === '/metrics' ||
+      req.url.startsWith('/ws'),
   });
 
   // Auth decorator
@@ -144,6 +148,7 @@ async function start() {
   await app.register(socialRoutes);
   await app.register(civilisationRoutes);
   await app.register(settingsRoutes);
+  await app.register(metricsRoutes);
 
   // WebSocket — subscribe to Redis pub/sub and fan out to connected clients
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');

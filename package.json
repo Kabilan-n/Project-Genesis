@@ -12,7 +12,8 @@
     "db:migrate": "node -e \"require('dotenv').config()\" db/migrate.js",
     "db:seed": "tsx packages/simulation/src/seed.ts",
     "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "soak:monitor": "tsx scripts/soak-monitor.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
