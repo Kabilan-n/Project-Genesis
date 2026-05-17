@@ -74,6 +74,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+42 tests from the 156 baseline).
 - All five Phase 1 tasks (1.1–1.5) implemented, tested, and merged.
 
+### Phase 9 — verification scaffolding
+Phase 9 is observational by nature — actual completion requires an
+operator to run 24+ hours of real simulation. This release ships the
+scaffolding so those runs have structure and tooling:
+
+- New `/metrics` endpoint (`packages/api/src/routes/metrics.ts`) reports
+  DB-derived operational state: per-world tick + tick-age, agent counts
+  by status, death-cause breakdown, event throughput, conversation /
+  trade / war / skirmish counters, chronicle count + latest era.
+  Rate-limit-allowlisted alongside `/health` and `/ws`.
+- New `scripts/soak-monitor.ts` polls `/metrics` every N seconds and
+  appends CSV rows including the monitor's own RSS. Wired as
+  `npm run soak:monitor`.
+- Four result-doc templates under `docs/`:
+  `SOAK_TEST_RESULTS.md` (9.1), `STORY_QUALITY_SAMPLE.md` (9.2),
+  `MULTI_WORLD_ISOLATION.md` (9.3), `SMOKE_TEST.md` (9.4). Each has
+  explicit run instructions, acceptance criteria, and verdict bins.
+- `docs/PHASE_9_VERIFICATION.md` is the index for the operator running
+  the phase.
+- Stabilization is "code-complete" at the end of Phase 9. The phase
+  formally closes when those four docs are filled in with verdicts and
+  any failures fixed or filed in `FOLLOWUPS.md`.
+
 ### Phase 8 — completion summary
 - New `.github/workflows/ci.yml`: lint + typecheck (simulation / api / web)
   + unit tests on every push and PR to `main` or `dev`; coverage job on
