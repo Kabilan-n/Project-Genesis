@@ -170,6 +170,26 @@ async function main() {
           log.error({ err: String(err) }, 'belief_extinction_error');
         }
 
+        // Phase 6.4 follow-up: idempotency records older than 24h are
+        // dead weight. Delete them once a day. idx_idempotency_cleanup
+        // is the supporting index.
+        try {
+          const result = await dbQuery<{ count: string }>(
+            `WITH deleted AS (
+               DELETE FROM auth.idempotency_records
+               WHERE created_at < NOW() - INTERVAL '24 hours'
+               RETURNING 1
+             )
+             SELECT COUNT(*)::text AS count FROM deleted`,
+          );
+          const removed = parseInt(result[0]?.count ?? '0', 10);
+          if (removed > 0) {
+            log.info({ removed, day }, 'idempotency_records_pruned');
+          }
+        } catch (err) {
+          log.error({ err: String(err) }, 'idempotency_cleanup_error');
+        }
+
         // Chronicle: check if a new era has completed
         try {
           const shouldChronicle = await chronicleEngine.shouldGenerate(WORLD_ID, day);
