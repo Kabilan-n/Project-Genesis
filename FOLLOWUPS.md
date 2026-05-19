@@ -80,6 +80,13 @@ resolved it; do not delete the entry.
   Docker wasn't running at baseline capture time, so the
   `migrate && seed` and `npm run dev` boot-against-clean-DB checks
   haven't been executed. Re-run when Docker is available.
+- **DX — API should warn when migrations look stale.** The
+  docker-compose init mount only runs migrations on first volume
+  creation, so a `git pull` that adds migrations leaves the DB
+  out of date until the operator runs `npm run db:migrate`. Add a
+  startup check that compares the count of migration files vs a
+  `schema_migrations` tracking table (or queries for the latest
+  expected table) and logs a fatal warning if missing.
 - **Phase 2 / Task 2.14 — Testcontainers integration suite deferred.**
   Docker still unavailable; the directory exists with a README but
   `@testcontainers/postgresql` + `@testcontainers/redis` aren't
