@@ -43,8 +43,8 @@ export async function metricsRoutes(app: FastifyInstance) {
       chronicleCount,
       latestChronicle,
     ] = await Promise.all([
-      query<{ world_id: string; current_tick: number; last_advanced_at: string | null; status: string }>(
-        `SELECT world_id, current_tick, last_advanced_at, status FROM worlds.worlds`,
+      query<{ world_id: string; current_tick: number; updated_at: string | null; status: string }>(
+        `SELECT world_id, current_tick, updated_at, status FROM worlds.worlds`,
       ),
       query<{ world_id: string; status: string; count: number }>(
         `SELECT world_id, status, COUNT(*)::int as count
@@ -100,9 +100,9 @@ export async function metricsRoutes(app: FastifyInstance) {
       worlds: worldStats.map((w) => ({
         world_id: w.world_id,
         current_tick: w.current_tick,
-        last_advanced_at: w.last_advanced_at,
-        tick_age_seconds: w.last_advanced_at
-          ? Math.round((now.getTime() - new Date(w.last_advanced_at).getTime()) / 1000)
+        last_advanced_at: w.updated_at,
+        tick_age_seconds: w.updated_at
+          ? Math.round((now.getTime() - new Date(w.updated_at).getTime()) / 1000)
           : null,
         status: w.status,
       })),
