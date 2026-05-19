@@ -19,30 +19,42 @@ const ItemQuantitySchema = z.object({
 const TradeOfferSchema = z.object({
   offered_items:   ItemQuantitySchema,
   requested_items: ItemQuantitySchema,
-});
+}).nullish();
+
+/**
+ * Optional string field as the LLM produces it: it may be omitted entirely,
+ * be `null`, or be an empty string. All three are equivalent to "unset"
+ * downstream. `z.string().optional()` alone accepts `undefined` but NOT
+ * `null`, and Claude/OpenAI routinely emit explicit nulls for fields they
+ * chose not to fill — so without this, every decision with a `null` field
+ * gets rejected as a parse failure.
+ *
+ *   z.string().max(N).nullish() → string | null | undefined
+ */
+const optStr = (max: number) => z.string().max(max).nullish();
 
 export const DecisionSchema = z.object({
   thought:        z.string().max(500),
   action:         z.string().min(1).max(150),
-  speech:         z.string().max(500).optional(),
-  target:         z.string().max(150).optional(),
-  trade_offer:    TradeOfferSchema.optional(),
+  speech:         optStr(500),
+  target:         optStr(150),
+  trade_offer:    TradeOfferSchema,
   // Phase 3
-  gossip_subject: z.string().max(150).optional(),
-  gossip_claim:   z.string().max(300).optional(),
-  group_name:     z.string().max(80).optional(),
-  group_purpose:  z.string().max(200).optional(),
+  gossip_subject: optStr(150),
+  gossip_claim:   optStr(300),
+  group_name:     optStr(80),
+  group_purpose:  optStr(200),
   // Phase 5
-  war_target_group:    z.string().max(150).optional(),
-  treaty_type:         z.enum(['non_aggression', 'resource_sharing', 'alliance', 'vassalage']).optional(),
-  treaty_target_group: z.string().max(150).optional(),
-  exile_target:        z.string().max(150).optional(),
+  war_target_group:    optStr(150),
+  treaty_type:         z.enum(['non_aggression', 'resource_sharing', 'alliance', 'vassalage']).nullish(),
+  treaty_target_group: optStr(150),
+  exile_target:        optStr(150),
   // Phase 6
-  belief_name:     z.string().max(80).optional(),
-  belief_tenet:    z.string().max(300).optional(),
-  myth_title:      z.string().max(120).optional(),
-  myth_narrative:  z.string().max(800).optional(),
-  preach_target:   z.string().max(150).optional(),
+  belief_name:     optStr(80),
+  belief_tenet:    optStr(300),
+  myth_title:      optStr(120),
+  myth_narrative:  optStr(800),
+  preach_target:   optStr(150),
 });
 // Default Zod object behavior strips unknown keys, which is what we want:
 // new fields land safely; the schema is the contract.
@@ -56,10 +68,10 @@ export const ConversationTurnSchema = z.object({
 export const TradeResponseSchema = z.object({
   decision: z.enum(['accept', 'reject', 'counter']),
   thought:  z.string().max(500),
-  reason:   z.string().max(500).optional(),
-  counter_offer: TradeOfferSchema.optional(),
+  reason:   optStr(500),
+  counter_offer: TradeOfferSchema,
 }).refine(
-  (data) => data.decision !== 'counter' || data.counter_offer !== undefined,
+  (data) => data.decision !== 'counter' || (data.counter_offer != null),
   { message: 'counter decision requires counter_offer' },
 );
 
